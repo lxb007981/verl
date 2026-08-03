@@ -574,6 +574,13 @@ def preprocess_bshd_engine(
     cp_size = mpu.get_context_parallel_world_size()
     cp_rank = mpu.get_context_parallel_rank()
 
+    new_vals = input_ids.values()[:-1]
+    old_offsets = input_ids.offsets()
+    new_offsets = old_offsets.clone()
+    new_offsets[-1] = -1
+    new_input_ids = torch.nested.nested_tensor_from_jagged(values=new_vals, offsets=new_offsets)
+    input_ids = new_input_ids
+
     batch_size = input_ids.shape[0]
     dense_shape = tuple(input_ids.shape[2:])
     seqlens_in_batch = input_ids.offsets().diff()
@@ -584,6 +591,9 @@ def preprocess_bshd_engine(
     # divisible by tp_size for sequence-parallel scatter.  Therefore the total
     # sequence length must be divisible by tp_size * cp_size * 2.
     align_size = tp_size * cp_size * 2 if cp_size > 1 else tp_size
+
+    align_size = 0
+
     if align_size > 1:
         pad_size = (align_size - max_seqlen % align_size) % align_size
         max_seqlen += pad_size

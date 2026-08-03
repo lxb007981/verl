@@ -406,7 +406,16 @@ class TrainingWorker(Worker, DistProfilerExtension):
         ):
             adapter_ctx = self.engine.disable_adapter() if no_lora_adapter else nullcontext()
             with adapter_ctx:
+                from msprobe.pytorch import PrecisionDebugger
+                import torch_npu
+                debugger = PrecisionDebugger(task="tensor", level="mix", dump_path="/efs_rl/l00870118/build_dump_glm52/train")
+                debugger.register_custom_api(module=torch_npu, api="npu_sparse_flash_attention")
+                debugger.start(model=self.engine.module[0])
+
                 output = self.engine.infer_batch(data, loss_function=loss_function)
+
+                debugger.stop()
+                debugger.step()
         delta_time = timer.last
 
         if self.engine.is_mp_src_rank_with_outputs():
