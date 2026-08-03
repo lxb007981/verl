@@ -16,6 +16,19 @@ import importlib
 import logging
 import os
 
+class _TransformersAliasLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        return not (
+            message.startswith("Accessing `")
+            and "`. Returning `" in message
+            and message.endswith(
+                "instead. Behavior may be different and this alias will be removed in future versions."
+            )
+        )
+
+logging.getLogger("transformers").addFilter(_TransformersAliasLogFilter())
+
 from packaging.version import parse as parse_version
 
 from .protocol import DataProto

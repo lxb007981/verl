@@ -311,7 +311,7 @@ class vLLMHttpServer:
             "compilation_config": compilation_config,
             **engine_kwargs,
         }
-
+        args["hf_overrides"]["use_index_cache"] = True
         # update profiler args
         profiler_args = build_vllm_profiler_args(
             self.profiler_controller.config, self.profiler_controller.tool_config, self.replica_rank
