@@ -38,6 +38,7 @@ from verl.utils.megatron.pipeline_parallel import make_batch_generator
 from verl.utils.megatron.router_replay_patch import RouterReplay, RouterReplayAction, apply_router_replay_patch
 from verl.utils.megatron.router_replay_utils import (
     RouterReplayHelper,
+    build_r3_replay_mask,
     merge_router_topk_indices,
     pp_gather,
     reorder_and_merge_vpp_layers,
@@ -870,7 +871,16 @@ class MegatronEngineWithLMHead(MegatronEngine):
 
         if RouterReplayHelper.is_replay_forward_action(self.tf_config, vp_rank):
             layers_topk_idx = model_inputs["routed_experts"]
-            set_router_replay_data(layers_topk_idx, None, self.tf_config, vp_rank)
+            replay_mask = None
+            if self.engine_config.router_replay.mode == "R3":
+                replay_mask = build_r3_replay_mask(input_ids, batch["response_mask"])
+            set_router_replay_data(
+                layers_topk_idx,
+                None,
+                self.tf_config,
+                vp_rank,
+                replay_mask=replay_mask,
+            )
 
         if pad_mode == DatasetPadMode.NO_PADDING:
             label = input_ids.clone()

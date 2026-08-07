@@ -84,15 +84,19 @@ class RouterReplay:
     def __init__(self):
         """Initializes a RouterReplay instance for a specific layer."""
         self.target_topk_idx = None  # For replay
+        self.target_replay_mask = None
         self.recorded_topk_idx = None  # For recording
         self.router_replay_action = None  # Router replay action for this layer
         self.replay_backward_list = []  # List of tensors for backward pass replay
+        self.replay_backward_mask_list = []
         RouterReplay.router_instances.append(self)
 
-    def set_target_indices(self, topk_indices: torch.Tensor):
+    def set_target_indices(self, topk_indices: torch.Tensor, replay_mask: torch.Tensor | None = None):
         """Sets the target topk indices for replay."""
         self.target_topk_idx = topk_indices
+        self.target_replay_mask = replay_mask
         self.replay_backward_list.append(topk_indices)
+        self.replay_backward_mask_list.append(replay_mask)
 
     def get_recorded_indices(self):
         """Returns the recorded topk indices."""
@@ -102,11 +106,36 @@ class RouterReplay:
         """Records the topk indices."""
         self.recorded_topk_idx = topk_indices
 
+    def get_replay_topk(self, scores, topk, num_groups=None, group_topk=None, default_compute_topk=None):
+        """Select native or replayed experts using the current replay action."""
+        action = self.router_replay_action
+        if action == RouterReplayAction.RECORD:
+            probs, indices = default_compute_topk(scores, topk, num_groups=num_groups, group_topk=group_topk)
+            self.record_indices(indices)
+            return probs, indices
+
+        if action == RouterReplayAction.REPLAY_FORWARD and self.target_topk_idx is not None:
+            indices = self.target_topk_idx
+            replay_mask = self.target_replay_mask
+        elif action == RouterReplayAction.REPLAY_BACKWARD and self.replay_backward_list:
+            indices = self.replay_backward_list.pop(0)
+            replay_mask = self.replay_backward_mask_list.pop(0)
+        else:
+            return default_compute_topk(scores, topk, num_groups=num_groups, group_topk=group_topk)
+
+        indices = indices.to(scores.device)
+        if replay_mask is not None:
+            _, native_indices = default_compute_topk(scores, topk, num_groups=num_groups, group_topk=group_topk)
+            indices = torch.where(replay_mask.to(scores.device).bool().unsqueeze(-1), indices, native_indices)
+        return scores.gather(1, indices), indices
+
     def clear_indices(self):
         """Clears the recorded and target topk indices."""
         self.recorded_topk_idx = None
         self.target_topk_idx = None
+        self.target_replay_mask = None
         self.replay_backward_list = []
+        self.replay_backward_mask_list = []
 
     def set_router_replay_action(self, router_replay_action: RouterReplayAction):
         """Sets the router replay action for this layer."""
@@ -160,45 +189,15 @@ def _patched_topk_routing_with_score_function(
             return torch.topk(scores, k=topk, dim=1)
 
     def compute_topk(scores, topk, num_groups=None, group_topk=None):
-        # Default behavior if no replay is active
-
-        routing_action = router_replay.router_replay_action if router_replay is not None else None
-
-        if routing_action is None:
+        if router_replay is None:
             return _compute_topk(scores, topk, num_groups=num_groups, group_topk=group_topk)
-
-        if routing_action == RouterReplayAction.RECORD:
-            probs, top_indices = _compute_topk(scores, topk, num_groups=num_groups, group_topk=group_topk)
-            if router_replay is not None:
-                router_replay.record_indices(top_indices)
-            return probs, top_indices
-
-        elif routing_action == RouterReplayAction.REPLAY_FORWARD:
-            if router_replay is None or router_replay.target_topk_idx is None:
-                # Fallback if replay data is not available
-                return _compute_topk(scores, topk, num_groups=num_groups, group_topk=group_topk)
-
-            # Use the provided indices for replay
-            top_indices = router_replay.target_topk_idx
-            # Ensure indices are on the correct device
-            top_indices = top_indices.to(scores.device)
-            # Gather the scores for the replayed indices to get the probabilities
-            probs = scores.gather(1, top_indices)
-            return probs, top_indices
-        elif routing_action == RouterReplayAction.REPLAY_BACKWARD:
-            if router_replay is None or not router_replay.replay_backward_list:
-                # Fallback if replay data is not available
-                return _compute_topk(scores, topk, num_groups=num_groups, group_topk=group_topk)
-
-            # Use the last recorded indices for backward replay
-            top_indices = router_replay.replay_backward_list.pop(0)
-            # Ensure indices are on the correct device
-            top_indices = top_indices.to(scores.device)
-            # Gather the scores for the replayed indices to get the probabilities
-            probs = scores.gather(1, top_indices)
-            return probs, top_indices
-        else:  # Unknown action, fallback
-            return _compute_topk(scores, topk, num_groups=num_groups, group_topk=group_topk)
+        return router_replay.get_replay_topk(
+            scores,
+            topk,
+            num_groups=num_groups,
+            group_topk=group_topk,
+            default_compute_topk=_compute_topk,
+        )
 
     if score_function == "softmax":
         if use_pre_softmax:
