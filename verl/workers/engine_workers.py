@@ -146,6 +146,7 @@ class TrainingWorker(Worker, DistProfilerExtension):
             self.flops_counter = None
 
         self.loss_fn = None
+        self.step = 1
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def to(self, device, model=True, optimizer=True, grad=True):
@@ -277,6 +278,27 @@ class TrainingWorker(Worker, DistProfilerExtension):
             output_lst = []
             total_num_iterations = data.shape[0] // mini_batch_size_per_gpu * epochs
 
+            import os
+            import torch_npu
+            if self.step == int(os.environ.get('PROFILE_STEP', 1)) and os.environ.get('UPDATE_PROFILE', "false") == "true":
+                # 准备 profiler (配置同上，略)
+                experimental_config = torch_npu.profiler._ExperimentalConfig(
+                    profiler_level=torch_npu.profiler.ProfilerLevel.Level1,
+                )
+                self.prof_npu = torch_npu.profiler.profile(
+                    activities=[torch_npu.profiler.ProfilerActivity.CPU, torch_npu.profiler.ProfilerActivity.NPU],
+                    with_modules=False,  # 采集调用栈
+                    profile_memory=os.environ.get('WITH_MEMORY', "false") == "true",  # 采集内存
+                    record_shapes=os.environ.get('WITH_SHAPE', "false") == "true",
+                    with_stack=os.environ.get('WITH_STACK', "false") == "true",
+                    experimental_config=experimental_config,
+                    # 仅采集第一个 Mini Batch（包含所有 Micro-Batch 的计算和一次优化器更新）
+                    schedule=torch_npu.profiler.schedule(wait=0, warmup=0, active=1, repeat=1),
+                    on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(os.environ.get('UPDATE_PROFILE_PATH'), analyse_flag=True)
+                )
+                if str(torch.distributed.get_rank()) in os.environ.get('PROFILE_RANKS', "0").split(','):
+                    self.prof_npu.start()
+
             for batch_idx, mini_batch_td in enumerate(dataloader):
                 # add global token num
                 if "input_ids" in mini_batch_td:
@@ -300,6 +322,13 @@ class TrainingWorker(Worker, DistProfilerExtension):
                 )
                 actor_output = self.train_batch(mini_batch_td)
                 output_lst.append(actor_output)
+
+                if self.step == int(os.environ.get('PROFILE_STEP', 1)) and os.environ.get('UPDATE_PROFILE', "false") == "true":
+                    # 驱动 schedule，对mini batch进行采集，如果想对micro batch进行，则将self.prof_npu.step()移动到micro_batch的循环内
+                    if str(torch.distributed.get_rank()) in os.environ.get('PROFILE_RANKS', "0").split(','):
+                        self.prof_npu.step()
+            # 此mini batch结束
+            self.step += 1
 
             if self.engine.is_mp_src_rank_with_outputs():
                 actor_output = [tu.get(output, "metrics") for output in output_lst]
