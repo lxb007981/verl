@@ -117,9 +117,12 @@ class FullyAsyncLLMServerClient(LLMServerClient):
                 if final_output.routed_experts is None:
                     final_output.routed_experts = output.routed_experts
                 else:
-                    final_output.routed_experts = torch.cat(
-                        [final_output.routed_experts, output.routed_experts[-len(output.token_ids) :]],
-                        dim=0,
+                    final_output.routed_experts = np.concatenate(
+                        [
+                            final_output.routed_experts,
+                            output.routed_experts[-len(output.token_ids) :],
+                        ],
+                        axis=0,
                     )
             if output.num_preempted is not None:
                 final_output.num_preempted += output.num_preempted
@@ -1031,9 +1034,10 @@ class FullyAsyncRollouter(SeparateRayPPOTrainer):
 
         try:
             # Run build and monitoring tasks concurrently
-            await asyncio.gather(generation_task, monitor_task, return_exceptions=True)
+            await asyncio.gather(generation_task, monitor_task)
         except Exception as e:
             print(f"[FullyAsyncRollouter] Asynchronous task execution error: {e}")
+            raise
         finally:
             if not generation_task.done():
                 generation_task.cancel()
