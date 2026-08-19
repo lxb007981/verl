@@ -871,6 +871,12 @@ class vLLMHttpServer:
                 - aborted_count: Number of requests aborted
                 - request_ids: List of aborted request IDs
         """
+        # Only node rank 0 owns AsyncLLM/self.engine. The remaining actors in a
+        # multi-node replica run vLLM's headless entry point, so there is no
+        # engine object to abort through on those actors.
+        if self.node_rank != 0:
+            return {"aborted_count": 0, "request_ids": []}
+
         try:
             # Snapshot request IDs before pausing for reporting
             request_ids = list(self.engine.output_processor.request_states.keys())
@@ -912,6 +918,9 @@ class vLLMHttpServer:
         Returns:
             dict[str, Any]: Dictionary containing abort result.
         """
+        if self.node_rank != 0:
+            return {"aborted": False, "request_id": request_id}
+
         try:
             request_states = self.engine.output_processor.request_states
             req_state = request_states.get(request_id)
@@ -1256,9 +1265,10 @@ class vLLMReplica(RolloutReplica):
         return {"aborted": False, "request_id": request_id, "error": "Request not found on any server"}
 
     async def release_kv_cache(self):
-        # Drain all in-flight requests so that vLLM worker threads go idle
-        # before we touch engine.release_kv_cache()
-        await self.servers[0].wait_for_requests_to_drain.remote()
+        # abort_all_requests() has already awaited pause_generation(mode="abort"),
+        # which pauses every DP engine and waits for abort outputs to drain. Do
+        # not re-check DPLBAsyncMPClient.engines_running here: that bookkeeping
+        # can remain stale after a DP pause and otherwise times out after 300s.
         await asyncio.gather(*[server.release_kv_cache.remote() for server in self.servers])
 
     # -----------------------------------------------------------------------
