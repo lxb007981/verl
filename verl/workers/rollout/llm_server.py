@@ -564,7 +564,14 @@ class LLMServerManager:
         ]
 
         if self.worker_group and self.rollout_config.name != "trtllm":
-            await asyncio.gather(*[server.init_hybrid(self.worker_group) for server in self.rollout_replicas])
+            if self.rollout_config.name == "vllm":
+                # Starting multiple replicas concurrently can let
+                # two executors select the same port and fail with EADDRINUSE.
+                # Revert to concurrent startup once vLLM supports race-free port selection.
+                for server in self.rollout_replicas:
+                    await server.init_hybrid(self.worker_group)
+            else:
+                await asyncio.gather(*[server.init_hybrid(self.worker_group) for server in self.rollout_replicas])
         # TODO: unify trtllm to init_hybrid
         elif self.worker_group and self.rollout_config.name == "trtllm":
             await asyncio.gather(
@@ -574,7 +581,11 @@ class LLMServerManager:
                 ]
             )
         else:
-            await asyncio.gather(*[server.init_standalone() for server in self.rollout_replicas])
+            if self.rollout_config.name == "vllm":
+                for server in self.rollout_replicas:
+                    await server.init_standalone()
+            else:
+                await asyncio.gather(*[server.init_standalone() for server in self.rollout_replicas])
 
         self.server_handles = [server._server_handle for server in self.rollout_replicas]
         self.server_addresses = [server._server_address for server in self.rollout_replicas]
