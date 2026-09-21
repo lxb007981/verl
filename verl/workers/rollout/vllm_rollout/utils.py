@@ -304,6 +304,23 @@ class vLLMColocateWorkerExtension:
         # apply only after ``is_last``; standard base weights load per bucket.
         lora_weights: dict[str, torch.Tensor] | None = {} if (peft_config and base_sync_done) else None
 
+        # A bucket may contain only base-model weights. Defer the MTP loader's
+        # layer-presence check until the full sync round has been received.
+        # Keep only loaded names, never views into the reusable IPC buffer.
+        mtp_drafter = None
+        mtp_loaded_params: set[str] | None = None
+        if (
+            peft_config is None
+            and not self._is_qat_model
+            and not self._is_modelopt_qat
+            and not is_fp8_model(self.model_runner.vllm_config)
+            and self._use_mtp_drafter_weight_sync()
+        ):
+            drafter = self._get_drafter_model()
+            if callable(getattr(drafter, "validate_mtp_weights", None)):
+                mtp_drafter = drafter
+                mtp_loaded_params = set()
+
         def on_bucket_received(weights: list[tuple[str, torch.Tensor]], is_last: bool) -> None:
             if lora_weights is not None:
                 # Clone: add_lora keeps these past the callback (reused IPC buffer, #6454).
@@ -321,7 +338,13 @@ class vLLMColocateWorkerExtension:
                 weights,
                 peft_config=peft_config,
                 base_sync_done=base_sync_done,
+                mtp_loaded_params=mtp_loaded_params,
             )
+            if is_last and mtp_drafter is not None:
+                # Validate before acknowledging the final bucket or running
+                # post-load transforms. An exception fails this sync round.
+                mtp_drafter.validate_mtp_weights(mtp_loaded_params, weight_source="completed weight transfer")
+                logger.info("MTP weight transfer validated, loaded_params: %d", len(mtp_loaded_params))
 
         receiver.receive_weights(on_bucket_received=on_bucket_received)
 
@@ -369,6 +392,7 @@ class vLLMColocateWorkerExtension:
         weights: list[tuple[str, torch.Tensor]],
         peft_config: dict,
         base_sync_done: bool,
+        mtp_loaded_params: set[str] | None = None,
     ):
         if peft_config and base_sync_done:
             # Clone out of the receiver's reused IPC bucket buffer: add_lora keeps these tensors
@@ -402,7 +426,10 @@ class vLLMColocateWorkerExtension:
                 if param_updates:
                     for model in self._iter_all_models():
                         if peft_config is None:
-                            model.load_weights(param_updates)
+                            if mtp_loaded_params is not None and model is self._get_drafter_model():
+                                mtp_loaded_params.update(model.load_weights(param_updates, validate_mtp_layers=False))
+                            else:
+                                model.load_weights(param_updates)
                         else:
                             names = {n for n, _ in model.named_parameters(remove_duplicate=False)}
                             names.update(n for n, _ in model.named_buffers())
