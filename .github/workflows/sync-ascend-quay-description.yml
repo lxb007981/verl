@@ -1,8 +1,9 @@
 name: Sync Ascend Quay description
 
 on:
+  # Temporary: register the workflow before manually dispatching it via gh.
   push:
-    branches: ["main"]
+    branches: ["test-quay-description"]
     paths:
       - "docker/ascend/quay-description.md"
       - ".github/workflows/sync-ascend-quay-description.yml"
@@ -16,16 +17,26 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  register-workflow:
+    if: github.repository == 'verl-project/verl' && github.ref == 'refs/heads/test-quay-description' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Show manual test command
+        run: |
+          echo 'Workflow registered. To update the live Quay description, run:'
+          echo 'gh workflow run sync-ascend-quay-description.yml --repo verl-project/verl --ref test-quay-description'
+
   sync-description:
-    if: github.repository == 'verl-project/verl' && github.ref == 'refs/heads/main'
+    if: github.repository == 'verl-project/verl' && github.ref == 'refs/heads/test-quay-description' && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Checkout current main
+      - name: Checkout current test branch
         uses: actions/checkout@v4
         with:
           # Rerunning an old workflow must not restore an outdated description.
-          ref: main
+          ref: test-quay-description
           persist-credentials: false
 
       - name: Update Quay repository description
