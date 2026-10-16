@@ -207,6 +207,8 @@ TRAINER=(
 
 EXTRA=(
     "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_VLLM_ASCEND_GLM52_PATCH='1'"
+    # Temporary diagnostics for the cross-node pipeline receive allocation failure.
+    "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_P2P_SHAPE_TRACE='1'"
     actor_rollout_ref.nccl_timeout=7200
     +transfer_queue.backend.SimpleStorage.required_node_resource=CPU
     --config-name='ppo_megatron_trainer' # need to be the last one, as it will split the positional overrides list
