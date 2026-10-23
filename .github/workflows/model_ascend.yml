@@ -54,6 +54,10 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # Config locks must stay off the read-only model cache mount.
+  MEGATRON_CONFIG_LOCK_DIR: /root/.cache/temp/megatron-config-locks
+
 jobs:
   model_rmpad_ascend:
     if: github.repository_owner == 'verl-project'
