@@ -18,6 +18,7 @@ import ray
 import torch
 from transformers import AutoModelForCausalLM
 
+from tests.checkpoint_engine.memory_diagnostics import trace_fsdp_initialization
 from verl.checkpoint_engine import CheckpointEngineRegistry, CheckpointEngineWorker
 from verl.single_controller.base.decorator import Dispatch, register
 from verl.single_controller.ray import RayClassWithInitArgs, RayResourcePool, RayWorkerGroup
@@ -41,7 +42,8 @@ class TrainingWorkerTest(TrainingWorker):
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL, blocking=False)
     async def update_weights(self, global_steps: int = None, mode: str = "auto"):
-        per_tensor_param, _ = self.engine.get_per_tensor_param()
+        with trace_fsdp_initialization():
+            per_tensor_param, _ = self.engine.get_per_tensor_param()
         await self.checkpoint_engine.send_weights(per_tensor_param, global_steps=global_steps)
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE, blocking=False)

@@ -52,6 +52,8 @@ async def test_hccl_checkpoint_engine(
                 "HCCL_HOST_SOCKET_PORT_RANGE": "60000-60050",
                 "HCCL_NPU_SOCKET_PORT_RANGE": "61000-61050",
                 "VERL_LOGGING_LEVEL": "DEBUG",
+                # Explicitly forward diagnostics even when Ray was started by an earlier test.
+                "VERL_FSDP_MEMORY_DIAGNOSTICS": os.environ.get("VERL_FSDP_MEMORY_DIAGNOSTICS", ""),
             }
         }
     )

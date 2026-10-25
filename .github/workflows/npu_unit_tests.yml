@@ -160,10 +160,15 @@ jobs:
         run: |
           PYTHONPATH="$PWD:$PYTHONPATH" torchrun --standalone --nproc-per-node=2 tests/special_distributed/test_fsdp2_model_cpu_offload.py
       - name: Running NPU checkpoint_engine unit tests
+        id: checkpoint_memory
+        shell: bash
         run: |
           # Keep pytest options out of sys.argv: MegatronAdaptor parses it during imports.
           # -c also avoids a <stdin> main module that multiprocessing.spawn cannot reload.
-          python -c '
+          mkdir -p /root/.cache/temp
+          diagnostic_dir=$(mktemp -d /root/.cache/temp/checkpoint-memory.XXXXXX)
+          echo "directory=$diagnostic_dir" >> "$GITHUB_OUTPUT"
+          python tests/checkpoint_engine/memory_diagnostics.py --output "$diagnostic_dir/evidence" -- python -c '
           import pytest
 
           raise SystemExit(pytest.main([
@@ -171,7 +176,21 @@ jobs:
               "-x",
               "tests/checkpoint_engine/test_correctness_on_npu.py",
           ]))
-          '
+          ' 2>&1 | tee "$diagnostic_dir/console.log"
+      - name: Collect checkpoint host memory diagnostics
+        if: always() && steps.checkpoint_memory.outputs.directory != ''
+        env:
+          DIAGNOSTIC_DIR: ${{ steps.checkpoint_memory.outputs.directory }}
+        run: |
+          python tests/checkpoint_engine/memory_diagnostics.py --output "$DIAGNOSTIC_DIR/evidence" --collect-only
+      - name: Upload checkpoint host memory diagnostics
+        if: always() && steps.checkpoint_memory.outputs.directory != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ascend-checkpoint-memory-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.checkpoint_memory.outputs.directory }}
+          retention-days: 7
+          if-no-files-found: warn
       - name: Running CPU checkpoint_engine unit tests
         run: |
           # Keep pytest options out of sys.argv: MegatronAdaptor parses it during imports.
