@@ -31,8 +31,8 @@
 
 
 on:
-  pull_request:
-    types: [opened, edited, synchronize]
+  # Temporarily disable unrelated CI during the NPU host-memory investigation.
+  workflow_dispatch:
 
 jobs:
   check-title:

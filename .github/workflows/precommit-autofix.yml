@@ -1,9 +1,7 @@
 name: scheduled pre-commit autofix
 
 on:
-  schedule:
-    # Every hour
-    - cron: "0 * * * *"
+  # Temporarily disable unrelated CI during the NPU host-memory investigation.
   workflow_dispatch:
 
 permissions:

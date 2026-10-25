@@ -1,15 +1,8 @@
 name: docker-build-ascend-sglang-a3
 
 on:
+  # Temporarily disable unrelated CI during the NPU host-memory investigation.
   workflow_dispatch:
-  push:
-    branches: ["main"]
-    paths:
-      - "docker/ascend/Dockerfile.ascend.sglang_8.5.0_a3"
-      - ".github/workflows/docker-build-ascend-sglang-a3.yml"
-
-  schedule:
-    - cron: "0 16 * * *"
 
 jobs:
   build-ascend-sglang-image-a3:

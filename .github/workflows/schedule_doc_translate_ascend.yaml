@@ -47,8 +47,7 @@
 name: Auto Doc Translate
 
 on:
-  schedule:
-    - cron: '0 0 * * 0'
+  # Temporarily disable unrelated CI during the NPU host-memory investigation.
   workflow_dispatch:
     inputs:
       target_branch:

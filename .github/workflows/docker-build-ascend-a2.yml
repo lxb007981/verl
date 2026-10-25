@@ -1,16 +1,8 @@
 name: docker-build-ascend-a2
 
 on:
+  # Temporarily disable unrelated CI during the NPU host-memory investigation.
   workflow_dispatch:
-  push:
-    branches: ["main"]
-    paths:
-      - "docker/ascend/Dockerfile.ascend_9.1.0_a2"
-      - "docker/ascend/Dockerfile.ascend_9.1.0_a2_v0.9.1"
-      - ".github/workflows/docker-build-ascend-a2.yml"
-
-  schedule:
-    - cron: "0 16 * * *"
 
 env:
   QUAY_REPO: quay.io/ascend/verl
