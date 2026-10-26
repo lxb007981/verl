@@ -29,7 +29,10 @@ import sys
 import threading
 import time
 import traceback
+from contextlib import contextmanager
 from pathlib import Path
+
+_offload_sequence = itertools.count()
 
 
 def now():
@@ -51,6 +54,7 @@ def snapshot(destination, detailed=True):
         "vmstat",
         "self/status",
         "thread-self/status",
+        "thread-self/sched",
         "self/limits",
         "self/cgroup",
         "self/mountinfo",
@@ -102,15 +106,60 @@ def capture(folder, name, command):
     (folder / name).write_text(output)
 
 
-def record(folder, **details):
+def record(folder, detailed=None, **details):
     """Diagnostic failures must not replace a workload exception."""
     try:
-        snapshot(folder, detailed=folder.name in {"installed", "failed", "initial", "final"})
-        (folder / "self_maps").write_text(read("/proc/self/maps"))
+        folder.mkdir(parents=True, exist_ok=True)
         details.update(time=now(), pid=os.getpid(), ppid=os.getppid(), tid=threading.get_native_id())
+        # Preserve the event/exception even if a later procfs read fails.
         (folder / "event.json").write_text(json.dumps(details, indent=2, default=str))
+        snapshot(
+            folder,
+            detailed=folder.name in {"installed", "failed", "initial", "final"} if detailed is None else detailed,
+        )
+        (folder / "self_maps").write_text(read("/proc/self/maps"))
     except Exception as exc:
         print(f"Ascend memory diagnostic failed: {exc!r}", file=sys.stderr, flush=True)
+
+
+@contextmanager
+def fsdp_offload(tensor, handle_index):
+    """Observe an FSDP1 transfer boundary, not individual internal allocations.
+
+    Metadata reads do not copy tensor data or synchronize the device. Elapsed
+    time measures the host call only; the original transfer remains asynchronous.
+    """
+    root = os.environ.get("VERL_ASCEND_MEMORY_DIAGNOSTICS")
+    if not root:
+        yield
+        return
+    transfer = Path(root) / "fsdp_offloads" / str(os.getpid()) / f"transfer-{next(_offload_sequence):06d}"
+    details = {"handle_index": handle_index, "target_device": "cpu", "non_blocking": True}
+    try:
+        details.update(
+            source_device=str(tensor.device),
+            dtype=str(tensor.dtype),
+            shape=list(tensor.shape),
+            numel=tensor.numel(),
+            tensor_bytes=tensor.numel() * tensor.element_size(),
+            stack=traceback.format_stack(),
+        )
+    except Exception as exc:
+        details["metadata_error"] = repr(exc)
+    # tensor_bytes is not the allocator's rounded request size.
+    record(transfer / "before", detailed=True, **details)
+    started = time.monotonic()
+    try:
+        yield
+    except Exception:
+        record(transfer / "failed", exception=traceback.format_exc(), elapsed_s=time.monotonic() - started)
+        try:
+            capture(transfer / "failed", "kernel.txt", ["dmesg", "-T"])
+        except Exception as exc:
+            print(f"Kernel capture failed: {exc!r}", file=sys.stderr, flush=True)
+        raise
+    else:
+        record(transfer / "after", elapsed_s=time.monotonic() - started)
 
 
 def install():
@@ -172,8 +221,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True)
     parser.add_argument("--host-only", action="store_true", help="Sample host state without allocation interception")
+    parser.add_argument(
+        "--require-fsdp-offload", action="store_true", help="Require FSDP1 transfer evidence on success"
+    )
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
+    if args.host_only and args.require_fsdp_offload:
+        parser.error("--require-fsdp-offload cannot be combined with --host-only")
     command = args.command
     if command[:1] == ["--"]:
         command = command[1:]
@@ -193,6 +247,7 @@ def main():
             __file__,
             "tests/special_npu/run_qwen3_06b_ppo.sh",
             "verl/workers/rollout/vllm_rollout/utils.py",
+            "verl/utils/fsdp_utils.py",
         ],
     }.items():
         capture(root, name, cmd)
@@ -212,6 +267,9 @@ def main():
     installed = list(root.glob("workers/*/installed/event.json"))
     allocations = list(root.glob("workers/*/allocation-*/before/event.json"))
     failures = list(root.glob("workers/*/allocation-*/failed/event.json"))
+    offloads = list(root.glob("fsdp_offloads/*/transfer-*/before/event.json"))
+    offload_failures = list(root.glob("fsdp_offloads/*/transfer-*/failed/event.json"))
+    offload_completed = list(root.glob("fsdp_offloads/*/transfer-*/after/event.json"))
     sleep_allocations = []
     for event in allocations:
         stack = "".join(json.loads(event.read_text())["stack"])
@@ -224,11 +282,19 @@ def main():
         "pinned_allocation_requests": len(allocations),
         "failed_allocations": len(failures),
         "vllm_ascend_sleep_allocations": sleep_allocations,
+        "fsdp_offload_processes": len({event.parents[2].name for event in offloads}),
+        "fsdp_offload_calls": len(offloads),
+        "fsdp_offload_completed": len(offload_completed),
+        "fsdp_offload_failures": len(offload_failures),
+        "fsdp_offload_failure_paths": [str(event.relative_to(root)) for event in offload_failures],
     }
     (root / "summary.json").write_text(json.dumps(summary, indent=2))
     print(json.dumps({**summary, "vllm_ascend_sleep_allocations": len(sleep_allocations)}), flush=True)
     if child.returncode:
         return child.returncode if child.returncode > 0 else 128 - child.returncode
+    if args.require_fsdp_offload and (not offloads or offload_failures or len(offload_completed) != len(offloads)):
+        print("Diagnostic incomplete: missing, failed or unfinished FSDP offload calls", file=sys.stderr)
+        return 2
     if not args.host_only and not sleep_allocations:
         print("Diagnostic incomplete: no instrumented vllm_ascend sleep allocation observed", file=sys.stderr)
         return 2

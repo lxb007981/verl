@@ -79,12 +79,13 @@ jobs:
           uv pip install --no-deps TransferQueue==0.1.11
           uv pip uninstall nvidia-resiliency-ext
           python3 examples/data_preprocess/gsm8k.py --local_dataset_path /root/.cache/modelscope/dataset/openai/gsm8k
-      - name: Run Qwen3-0.6B PPO with allocation instrumentation
+      - name: Run Qwen3-0.6B PPO with FSDP offload and sleep instrumentation
         shell: bash
         run: |
           set -o pipefail
           ray stop --force
-          python3 verl/utils/ascend_memory_diagnostics.py --output "$VERL_ASCEND_MEMORY_DIAGNOSTICS" -- \
+          python3 verl/utils/ascend_memory_diagnostics.py --output "$VERL_ASCEND_MEMORY_DIAGNOSTICS" \
+            --require-fsdp-offload -- \
             bash tests/special_npu/run_qwen3_06b_ppo.sh \
             "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_ASCEND_MEMORY_DIAGNOSTICS=$VERL_ASCEND_MEMORY_DIAGNOSTICS" \
             2>&1 | tee pinned-memory-artifacts/ppo-console.log
