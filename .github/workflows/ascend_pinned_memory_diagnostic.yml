@@ -79,11 +79,12 @@ jobs:
           uv pip install --no-deps TransferQueue==0.1.11
           uv pip uninstall nvidia-resiliency-ext
           python3 examples/data_preprocess/gsm8k.py --local_dataset_path /root/.cache/modelscope/dataset/openai/gsm8k
-      - name: Run Qwen3-0.6B PPO with FSDP offload and sleep instrumentation
+      - name: Run PPO with worker initialization, offload and optional kernel tracing
         shell: bash
         run: |
           set -o pipefail
           ray stop --force
+          python3 verl/utils/ascend_kernel_trace.py --output pinned-memory-artifacts/kernel-trace -- \
           python3 verl/utils/ascend_memory_diagnostics.py --output "$VERL_ASCEND_MEMORY_DIAGNOSTICS" \
             --require-fsdp-offload -- \
             bash tests/special_npu/run_qwen3_06b_ppo.sh \
@@ -94,6 +95,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p pinned-memory-artifacts
+          python3 verl/utils/ascend_kernel_trace.py --output pinned-memory-artifacts/kernel-trace --stop || true
           timeout 20s dmesg -T > pinned-memory-artifacts/kernel-final.txt 2>&1 || true
           timeout 20s journalctl -k --utc --since '-45 minutes' --no-pager > pinned-memory-artifacts/kernel-journal.txt 2>&1 || true
           if [ -d /tmp/ray/session_latest/logs ]; then

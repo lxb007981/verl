@@ -46,6 +46,34 @@ def read(path):
         return f"UNAVAILABLE: {exc}\n"
 
 
+def thread_memory_policy():
+    """Read this thread's default NUMA policy without changing it."""
+    import ctypes
+
+    try:
+        library = ctypes.CDLL("libnuma.so.1", use_errno=True)
+        query = library.get_mempolicy
+        query.argtypes = [
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.POINTER(ctypes.c_ulong),
+            ctypes.c_ulong,
+            ctypes.c_void_p,
+            ctypes.c_ulong,
+        ]
+        query.restype = ctypes.c_int
+        possible = Path("/sys/devices/system/node/possible").read_text().strip()
+        max_node = max(int(part.split("-")[-1]) for part in possible.split(",")) + 1
+        bits = ctypes.sizeof(ctypes.c_ulong) * 8
+        words = (max_node + bits - 1) // bits
+        mask = (ctypes.c_ulong * words)()
+        mode = ctypes.c_int()
+        if query(ctypes.byref(mode), mask, words * bits, None, 0):
+            raise OSError(ctypes.get_errno(), "get_mempolicy failed")
+        return {"mode": mode.value, "nodes": [i for i in range(max_node) if mask[i // bits] & (1 << (i % bits))]}
+    except Exception as exc:
+        return {"unavailable": repr(exc)}
+
+
 def snapshot(destination, detailed=True):
     destination.mkdir(parents=True, exist_ok=True)
     for name in (
@@ -63,6 +91,7 @@ def snapshot(destination, detailed=True):
     if detailed:
         (destination / "pagetypeinfo").write_text(read("/proc/pagetypeinfo"))
         (destination / "self_numa_maps").write_text(read("/proc/self/numa_maps"))
+        (destination / "thread-memory-policy.json").write_text(json.dumps(thread_memory_policy(), indent=2))
     for node in Path("/sys/devices/system/node").glob("node[0-9]*"):
         (destination / (node.name + "_meminfo")).write_text(read(node / "meminfo"))
     memberships = [line.split(":", 2) for line in read("/proc/self/cgroup").splitlines() if line.count(":") == 2]
@@ -110,7 +139,13 @@ def record(folder, detailed=None, **details):
     """Diagnostic failures must not replace a workload exception."""
     try:
         folder.mkdir(parents=True, exist_ok=True)
-        details.update(time=now(), pid=os.getpid(), ppid=os.getppid(), tid=threading.get_native_id())
+        details.update(
+            time=now(),
+            monotonic_ns=time.monotonic_ns(),
+            pid=os.getpid(),
+            ppid=os.getppid(),
+            tid=threading.get_native_id(),
+        )
         # Preserve the event/exception even if a later procfs read fails.
         (folder / "event.json").write_text(json.dumps(details, indent=2, default=str))
         snapshot(
@@ -120,6 +155,36 @@ def record(folder, detailed=None, **details):
         (folder / "self_maps").write_text(read("/proc/self/maps"))
     except Exception as exc:
         print(f"Ascend memory diagnostic failed: {exc!r}", file=sys.stderr, flush=True)
+
+
+def install_worker_init(worker_class):
+    """Wrap the resolved worker method, without changing global tensor constructors."""
+    original = worker_class.init_device
+    if getattr(original, "_verl_memory_diagnostics", False):
+        return
+
+    @functools.wraps(original)
+    def init_device(self, *args, **kwargs):
+        root = os.environ.get("VERL_ASCEND_MEMORY_DIAGNOSTICS")
+        if not root:
+            return original(self, *args, **kwargs)
+        folder = Path(root) / "worker_init" / str(os.getpid()) / str(time.monotonic_ns())
+        record(folder / "before", detailed=True, method=original.__qualname__, stack=traceback.format_stack())
+        started = time.monotonic()
+        try:
+            result = original(self, *args, **kwargs)
+        except Exception:
+            record(folder / "failed", exception=traceback.format_exc(), elapsed_s=time.monotonic() - started)
+            try:
+                capture(folder / "failed", "kernel.txt", ["dmesg", "-T"])
+            except Exception as exc:
+                print(f"Kernel capture failed: {exc!r}", file=sys.stderr, flush=True)
+            raise
+        record(folder / "after", elapsed_s=time.monotonic() - started)
+        return result
+
+    init_device._verl_memory_diagnostics = True
+    worker_class.init_device = init_device
 
 
 @contextmanager
@@ -248,6 +313,7 @@ def main():
             "tests/special_npu/run_qwen3_06b_ppo.sh",
             "verl/workers/rollout/vllm_rollout/utils.py",
             "verl/utils/fsdp_utils.py",
+            "verl/utils/ascend_kernel_trace.py",
         ],
     }.items():
         capture(root, name, cmd)
@@ -270,6 +336,9 @@ def main():
     offloads = list(root.glob("fsdp_offloads/*/transfer-*/before/event.json"))
     offload_failures = list(root.glob("fsdp_offloads/*/transfer-*/failed/event.json"))
     offload_completed = list(root.glob("fsdp_offloads/*/transfer-*/after/event.json"))
+    init_calls = list(root.glob("worker_init/*/*/before/event.json"))
+    init_completed = list(root.glob("worker_init/*/*/after/event.json"))
+    init_failures = list(root.glob("worker_init/*/*/failed/event.json"))
     sleep_allocations = []
     for event in allocations:
         stack = "".join(json.loads(event.read_text())["stack"])
@@ -287,11 +356,18 @@ def main():
         "fsdp_offload_completed": len(offload_completed),
         "fsdp_offload_failures": len(offload_failures),
         "fsdp_offload_failure_paths": [str(event.relative_to(root)) for event in offload_failures],
+        "worker_init_calls": len(init_calls),
+        "worker_init_completed": len(init_completed),
+        "worker_init_failures": len(init_failures),
+        "worker_init_failure_paths": [str(event.relative_to(root)) for event in init_failures],
     }
     (root / "summary.json").write_text(json.dumps(summary, indent=2))
     print(json.dumps({**summary, "vllm_ascend_sleep_allocations": len(sleep_allocations)}), flush=True)
     if child.returncode:
         return child.returncode if child.returncode > 0 else 128 - child.returncode
+    if not args.host_only and (not init_calls or init_failures or len(init_completed) != len(init_calls)):
+        print("Diagnostic incomplete: missing, failed or unfinished worker initialization", file=sys.stderr)
+        return 2
     if args.require_fsdp_offload and (not offloads or offload_failures or len(offload_completed) != len(offloads)):
         print("Diagnostic incomplete: missing, failed or unfinished FSDP offload calls", file=sys.stderr)
         return 2
