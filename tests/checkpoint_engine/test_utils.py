@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import asyncio
+import hashlib
+import os
 from typing import Generator
 
 import ray
@@ -26,6 +28,24 @@ from verl.utils.fs import copy_to_local
 from verl.workers.config import CheckpointEngineConfig, FSDPEngineConfig, HFModelConfig, RolloutConfig
 from verl.workers.engine_workers import TrainingWorker, TrainingWorkerConfig
 from verl.workers.rollout import BaseRollout, RolloutReplica
+
+_DIAGNOSTIC_WEIGHT = "model.layers.1.mlp.down_proj.weight"
+
+
+def _weight_diagnostics(weight: torch.Tensor) -> dict:
+    """Summarize on CPU so diagnostics do not depend on NPU comparison kernels."""
+    cpu = weight.detach().cpu().contiguous()
+    values = cpu.float().flatten()
+    return {
+        "shape": tuple(weight.shape),
+        "dtype": str(weight.dtype),
+        "device": str(weight.device),
+        "sha256": hashlib.sha256(cpu.view(torch.uint8).numpy().tobytes()).hexdigest(),
+        "bf16_sha256": hashlib.sha256(cpu.bfloat16().view(torch.uint8).numpy().tobytes()).hexdigest(),
+        "nan_count": torch.isnan(values).sum().item(),
+        "inf_count": torch.isinf(values).sum().item(),
+        "first_values": values[:8].tolist(),
+    }
 
 
 class TrainingWorkerTest(TrainingWorker):
@@ -42,7 +62,20 @@ class TrainingWorkerTest(TrainingWorker):
     @register(dispatch_mode=Dispatch.ONE_TO_ALL, blocking=False)
     async def update_weights(self, global_steps: int = None, mode: str = "auto"):
         per_tensor_param, _ = self.engine.get_per_tensor_param()
-        await self.checkpoint_engine.send_weights(per_tensor_param, global_steps=global_steps)
+
+        def diagnostic_params():
+            for name, weight in per_tensor_param:
+                if name == _DIAGNOSTIC_WEIGHT and torch.distributed.get_rank() == 0:
+                    # This CPU copy synchronizes the target tensor and can affect race timing.
+                    print(
+                        f"Checkpoint diagnostic sender pid={os.getpid()} rank=0 step={global_steps} "
+                        f"bucket_bytes={getattr(self.checkpoint_engine, 'bucket_size', None)} name={name}: "
+                        f"{_weight_diagnostics(weight)}",
+                        flush=True,
+                    )
+                yield name, weight
+
+        await self.checkpoint_engine.send_weights(diagnostic_params(), global_steps=global_steps)
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE, blocking=False)
     def execute_checkpoint_engine(self, method: str, *args, **kwargs):
@@ -83,9 +116,35 @@ class MockServerAdapter(BaseRollout):
         for name, weight in self.model.state_dict().items():
             assert name in self.received_weights, f"weight {name} not received"
             received = self.received_weights[name]
-            assert torch.allclose(weight.to(received.device, dtype=received.dtype), received), (
-                f"weight {name} not equal"
-            )
+            expected = weight.to(received.device, dtype=received.dtype)
+            matches = torch.allclose(expected, received)
+            if name == _DIAGNOSTIC_WEIGHT or not matches:
+                context = (
+                    f"Checkpoint diagnostic receiver pid={os.getpid()} "
+                    f"rank={torch.distributed.get_rank()} model={self.model_config.path} name={name}"
+                )
+                print(f"{context} reference: {_weight_diagnostics(weight)}", flush=True)
+                print(f"{context} received: {_weight_diagnostics(received)}", flush=True)
+            if not matches:
+                expected_cpu = expected.detach().cpu().float().flatten()
+                received_cpu = received.detach().cpu().float().flatten()
+                mismatches = ~torch.isclose(expected_cpu, received_cpu)
+                finite = torch.isfinite(expected_cpu) & torch.isfinite(received_cpu)
+                abs_diff = (expected_cpu - received_cpu).abs()
+                first = int(mismatches.to(torch.uint8).argmax().item())
+                print(
+                    f"{context} comparison: device_allclose={matches} "
+                    f"cpu_allclose={torch.allclose(expected_cpu, received_cpu)} "
+                    f"mismatch_count={mismatches.sum().item()}/{received_cpu.numel()} "
+                    f"finite_pair_count={finite.sum().item()} "
+                    f"max_finite_abs_diff={torch.where(finite, abs_diff, 0.0).max().item()} "
+                    f"bf16_allclose={torch.allclose(expected_cpu.bfloat16(), received_cpu.bfloat16())} "
+                    f"first_mismatch_flat_index={first if mismatches.any() else None} "
+                    f"expected_window={expected_cpu[first : first + 8].tolist()} "
+                    f"received_window={received_cpu[first : first + 8].tolist()}",
+                    flush=True,
+                )
+                raise AssertionError(f"weight {name} not equal")
         self.received_weights.clear()
         print("Check passed, all weights are equal!")
 
