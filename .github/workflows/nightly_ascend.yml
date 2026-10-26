@@ -62,7 +62,7 @@ jobs:
       options: >-
         --shm-size 16g
     env:
-      MODEL_PATH: /root/.cache/models/Qwen/Qwen3-8B
+      MODEL_PATH: /root/.cache/modelscope/hub/models/Qwen/Qwen3-8B
       HF_ENDPOINT: "https://hf-mirror.com"
       HF_HUB_ENABLE_HF_TRANSFER: "0" # This is more stable
       PIP_INDEX_URL: "http://cache-service.nginx-pypi-cache.svc.cluster.local/pypi/simple"
@@ -343,7 +343,7 @@ jobs:
       HF_HUB_ENABLE_HF_TRANSFER: "0" # This is more stable
       PIP_INDEX_URL: "http://cache-service.nginx-pypi-cache.svc.cluster.local/pypi/simple"
       PIP_TRUSTED_HOST: "cache-service.nginx-pypi-cache.svc.cluster.local"
-      MODEL_PATH: /root/.cache/models/Qwen/Qwen3.5-2B
+      MODEL_PATH: /root/.cache/modelscope/hub/models/Qwen/Qwen3.5-2B
       TRANSFORMERS_VERBOSITY: 'error'
     steps:
       - name: Check npu and CANN info
