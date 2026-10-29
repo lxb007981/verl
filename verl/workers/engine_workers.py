@@ -686,7 +686,13 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             else:
                 self.loss_fn = partial(ppo_loss, config=actor_config)
             self.actor = self.actor_worker_cls(config=actor_training_config)
-            self.actor.reset()
+            if os.environ.get("VERL_ASCEND_MEMORY_DIAGNOSTICS"):
+                from verl.utils.ascend_memory_diagnostics import actor_initialization
+
+                with actor_initialization():
+                    self.actor.reset()
+            else:
+                self.actor.reset()
             self.actor.set_loss_fn(self.loss_fn)
             self.set_dispatch_collect(mesh_name="actor", **self.actor.get_dispatch_collect())
 

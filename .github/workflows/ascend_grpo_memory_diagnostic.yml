@@ -1,0 +1,96 @@
+name: Ascend GRPO FSDP2 host memory diagnostic
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      kernel_trace:
+        description: Attempt bounded private kernel tracing (requires existing tracefs access)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  grpo_memory:
+    runs-on: linux-aarch64-a3-800i-16
+    timeout-minutes: 180
+    container:
+      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
+      options: --shm-size 80g
+    env:
+      HF_DATASETS_CACHE: /root/.cache/temp/hf-datasets
+      MEGATRON_CONFIG_LOCK_DIR: /root/.cache/temp/megatron-config-locks
+      HF_ENDPOINT: https://hf-mirror.com
+      HF_HUB_ENABLE_HF_TRANSFER: "0"
+      PIP_INDEX_URL: http://cache-service.nginx-pypi-cache.svc.cluster.local/pypi/simple
+      PIP_TRUSTED_HOST: cache-service.nginx-pypi-cache.svc.cluster.local
+      MODEL_PATH: /root/.cache/modelscope/hub/models/Qwen/Qwen3.5-2B
+      TRANSFORMERS_VERBOSITY: error
+      PYTHONUNBUFFERED: "1"
+      ASCEND_PROCESS_LOG_PATH: ${{ github.workspace }}/grpo-memory-artifacts/ascend
+      VERL_ASCEND_MEMORY_DIAGNOSTICS: ${{ github.workspace }}/grpo-memory-artifacts/grpo
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          clean: true
+      - name: Record environment before installation
+        shell: bash
+        run: |
+          mkdir -p grpo-memory-artifacts/ascend
+          date -u --iso-8601=seconds > grpo-memory-artifacts/start.txt
+          hostname > grpo-memory-artifacts/hostname.txt
+          git rev-parse HEAD > grpo-memory-artifacts/revision.txt
+          pip list > grpo-memory-artifacts/packages-before.txt
+          cat /usr/local/Ascend/driver/version.info > grpo-memory-artifacts/driver-version.txt 2>&1 || true
+          cat /usr/local/Ascend/ascend-toolkit/latest/"$(uname -i)"-linux/ascend_toolkit_install.info \
+            > grpo-memory-artifacts/cann-version.txt 2>&1 || true
+          npu-smi info > grpo-memory-artifacts/npu-before.txt 2>&1 || true
+          sha256sum verl/utils/ascend_memory_diagnostics.py verl/utils/ascend_kernel_trace.py \
+            verl/workers/engine_workers.py tests/special_npu/nightly_ci_ascend/run_grpo_qwen3_5_2b_fsdp2_npu.sh \
+            > grpo-memory-artifacts/source-hashes.txt
+      - name: Prepare the nightly GRPO workload
+        shell: bash
+        run: |
+          set -o pipefail
+          pip install -v -e . 2>&1 | tee grpo-memory-artifacts/install.log
+          pip list > grpo-memory-artifacts/packages-after.txt
+          python3 examples/data_preprocess/geo3k.py --local_dataset_path "${HOME}/.cache/modelscope/dataset/hiyouga/geometry3k"
+      - name: Run unchanged GRPO with actor initialization diagnostics
+        shell: bash
+        env:
+          ENABLE_KERNEL_TRACE: ${{ github.event_name == 'pull_request' || inputs.kernel_trace }}
+        run: |
+          set -o pipefail
+          ray stop --force
+          trace_args=()
+          if [ "$ENABLE_KERNEL_TRACE" != "true" ]; then trace_args+=(--disabled); fi
+          python3 verl/utils/ascend_kernel_trace.py --output grpo-memory-artifacts/kernel-trace "${trace_args[@]}" -- \
+            python3 verl/utils/ascend_memory_diagnostics.py --output "$VERL_ASCEND_MEMORY_DIAGNOSTICS" --expected-actors 4 -- \
+            bash tests/special_npu/nightly_ci_ascend/run_grpo_qwen3_5_2b_fsdp2_npu.sh \
+            "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_ASCEND_MEMORY_DIAGNOSTICS=$VERL_ASCEND_MEMORY_DIAGNOSTICS" \
+            "++ray_kwargs.ray_init.runtime_env.env_vars.ASCEND_PROCESS_LOG_PATH=$ASCEND_PROCESS_LOG_PATH" \
+            2>&1 | tee grpo-memory-artifacts/console.log
+      - name: Preserve final diagnostics
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p grpo-memory-artifacts
+          python3 verl/utils/ascend_kernel_trace.py --output grpo-memory-artifacts/kernel-trace --stop || true
+          timeout 20s dmesg -T > grpo-memory-artifacts/kernel-final.txt 2>&1 || true
+          timeout 20s journalctl -k --utc --since '-180 minutes' --no-pager \
+            > grpo-memory-artifacts/kernel-journal.txt 2>&1 || true
+          if [ -d /tmp/ray/session_latest/logs ]; then
+            timeout 60s tar -czf grpo-memory-artifacts/ray-logs.tar.gz -C /tmp/ray/session_latest logs || true
+          fi
+          date -u --iso-8601=seconds > grpo-memory-artifacts/end.txt
+      - name: Upload diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ascend-grpo-memory-${{ github.run_id }}-${{ github.run_attempt }}
+          path: grpo-memory-artifacts/
+          retention-days: 14
+          if-no-files-found: warn
