@@ -97,6 +97,13 @@ class TrainingWorkerTest(TrainingWorker):
     @register(dispatch_mode=Dispatch.ONE_TO_ALL, blocking=False)
     async def update_weights(self, global_steps: int = None, mode: str = "auto"):
         per_tensor_param, _ = self.engine.get_per_tensor_param()
+        sender_diagnostics = os.environ.get("VERL_CHECKPOINT_SENDER_DIAGNOSTICS", "off")
+        if sender_diagnostics not in {"off", "hash"}:
+            raise ValueError(f"Invalid VERL_CHECKPOINT_SENDER_DIAGNOSTICS: {sender_diagnostics!r}")
+        if sender_diagnostics == "off":
+            # Preserve the original generator path: no tensor reads, copies, or extra synchronization.
+            await self.checkpoint_engine.send_weights(per_tensor_param, global_steps=global_steps)
+            return
 
         def diagnostic_params():
             for name, weight in per_tensor_param:
@@ -155,17 +162,19 @@ class MockServerAdapter(BaseRollout):
             received = self.received_weights[name]
             expected = weight.to(received.device, dtype=received.dtype)
             matches = torch.allclose(expected, received)
-            if name in _DIAGNOSTIC_WEIGHTS or not matches:
+            # Keep both experiment modes identical on the receiver. Diagnose any failing
+            # tensor, not just the sampled sender names, only after observing the failure.
+            if not matches:
                 context = (
                     f"Checkpoint diagnostic receiver pid={os.getpid()} "
                     f"rank={torch.distributed.get_rank()} step={self.global_steps} "
+                    f"sender_diagnostics={os.environ.get('VERL_CHECKPOINT_SENDER_DIAGNOSTICS', 'off')} "
                     f"bucket_mb={self.config.checkpoint_engine.update_weights_bucket_megabytes} "
                     f"model={self.model_config.path} name={name}"
                 )
                 print(f"{context} reference: {_weight_diagnostics(weight)}", flush=True)
                 print(f"{context} received: {_weight_diagnostics(received)}", flush=True)
                 _checkpoint_diagnostics(copy_to_local(self.model_config.path), name, received, context)
-            if not matches:
                 # Build the CPU reference independently of the device-side conversion.
                 expected_cpu = weight.detach().cpu().to(received.dtype).float().flatten()
                 received_cpu = received.detach().cpu().float().flatten()
