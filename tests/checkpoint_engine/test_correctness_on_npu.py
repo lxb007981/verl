@@ -75,8 +75,13 @@ async def test_hccl_checkpoint_engine(
 
     # create checkpoint engine manager
     checkpoint_manager = CheckpointEngineManager(config=checkpoint_engine_config, actor_wg=actor_wg, replicas=replicas)
-    for _ in range(3):
-        await checkpoint_manager.update_weights()
+    for step in range(3):
+        print(
+            f"HCCL checkpoint iteration={step} bucket_mb={bucket_size_mb} "
+            f"trainers={num_trainer} receivers={num_rollout} rebuild_group={rebuild_group}",
+            flush=True,
+        )
+        await checkpoint_manager.update_weights(global_steps=step)
         rollout.check_weights()
 
     ray.shutdown()

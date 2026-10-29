@@ -13,7 +13,9 @@
 # limitations under the License.
 import asyncio
 import hashlib
+import json
 import os
+from pathlib import Path
 from typing import Generator
 
 import ray
@@ -29,7 +31,7 @@ from verl.workers.config import CheckpointEngineConfig, FSDPEngineConfig, HFMode
 from verl.workers.engine_workers import TrainingWorker, TrainingWorkerConfig
 from verl.workers.rollout import BaseRollout, RolloutReplica
 
-_DIAGNOSTIC_WEIGHT = "model.layers.1.mlp.down_proj.weight"
+_DIAGNOSTIC_WEIGHTS = {"model.layers.0.mlp.up_proj.weight", "model.layers.1.mlp.down_proj.weight"}
 
 
 def _weight_diagnostics(weight: torch.Tensor) -> dict:
@@ -46,6 +48,39 @@ def _weight_diagnostics(weight: torch.Tensor) -> dict:
         "inf_count": torch.isinf(values).sum().item(),
         "first_values": values[:8].tolist(),
     }
+
+
+def _checkpoint_diagnostics(local_path: str, name: str, received: torch.Tensor, context: str):
+    """Read only the original tensor, avoiding a second full FP32 reference model."""
+    from safetensors import safe_open
+
+    try:
+        root = Path(local_path)
+        index = root / "model.safetensors.index.json"
+        if index.is_file():
+            with index.open(encoding="utf-8") as handle:
+                shard = json.load(handle)["weight_map"][name]
+        else:
+            shard = "model.safetensors"
+        with safe_open(str(root / shard), framework="pt", device="cpu") as handle:
+            original = handle.get_tensor(name)
+        actual = received.detach().cpu()
+        reference = original.to(actual.dtype)
+        rounded = original.bfloat16().to(actual.dtype)
+        print(f"{context} checkpoint_original: {_weight_diagnostics(original)}", flush=True)
+        print(f"{context} checkpoint_as_received_dtype: {_weight_diagnostics(reference)}", flush=True)
+        print(
+            f"{context} checkpoint_comparison: "
+            f"original_equal={torch.equal(reference, actual)} "
+            f"original_allclose={torch.allclose(reference, actual)} "
+            f"bf16_roundtrip_equal={torch.equal(rounded, actual)} "
+            f"bf16_roundtrip_allclose={torch.allclose(rounded, actual)} "
+            f"original_changed_by_bf16={(reference != rounded).sum().item()}/{reference.numel()}",
+            flush=True,
+        )
+    except Exception as exc:
+        # Diagnostics must not obscure the original assertion (e.g. a .bin checkpoint).
+        print(f"{context} checkpoint_diagnostics_unavailable={type(exc).__name__}: {exc}", flush=True)
 
 
 class TrainingWorkerTest(TrainingWorker):
@@ -65,7 +100,7 @@ class TrainingWorkerTest(TrainingWorker):
 
         def diagnostic_params():
             for name, weight in per_tensor_param:
-                if name == _DIAGNOSTIC_WEIGHT and torch.distributed.get_rank() == 0:
+                if name in _DIAGNOSTIC_WEIGHTS and torch.distributed.get_rank() == 0:
                     # This CPU copy synchronizes the target tensor and can affect race timing.
                     print(
                         f"Checkpoint diagnostic sender pid={os.getpid()} rank=0 step={global_steps} "
@@ -87,6 +122,7 @@ class MockServerAdapter(BaseRollout):
         super().__init__(config, model_config, device_mesh=None)
         self.check_allclose = check_allclose
         self.model = None
+        self.global_steps = None
         self.received_weights: dict[str, torch.Tensor] = {}
 
     async def resume(self, tags: list[str]):
@@ -100,6 +136,7 @@ class MockServerAdapter(BaseRollout):
         weights: Generator[tuple[str, torch.Tensor], None, None],
         **kwargs,
     ):
+        self.global_steps = kwargs.get("global_steps")
         async for name, weight in weights:
             weight = weight.clone()
             if self.check_allclose:
@@ -118,15 +155,19 @@ class MockServerAdapter(BaseRollout):
             received = self.received_weights[name]
             expected = weight.to(received.device, dtype=received.dtype)
             matches = torch.allclose(expected, received)
-            if name == _DIAGNOSTIC_WEIGHT or not matches:
+            if name in _DIAGNOSTIC_WEIGHTS or not matches:
                 context = (
                     f"Checkpoint diagnostic receiver pid={os.getpid()} "
-                    f"rank={torch.distributed.get_rank()} model={self.model_config.path} name={name}"
+                    f"rank={torch.distributed.get_rank()} step={self.global_steps} "
+                    f"bucket_mb={self.config.checkpoint_engine.update_weights_bucket_megabytes} "
+                    f"model={self.model_config.path} name={name}"
                 )
                 print(f"{context} reference: {_weight_diagnostics(weight)}", flush=True)
                 print(f"{context} received: {_weight_diagnostics(received)}", flush=True)
+                _checkpoint_diagnostics(copy_to_local(self.model_config.path), name, received, context)
             if not matches:
-                expected_cpu = expected.detach().cpu().float().flatten()
+                # Build the CPU reference independently of the device-side conversion.
+                expected_cpu = weight.detach().cpu().to(received.dtype).float().flatten()
                 received_cpu = received.detach().cpu().float().flatten()
                 mismatches = ~torch.isclose(expected_cpu, received_cpu)
                 finite = torch.isfinite(expected_cpu) & torch.isfinite(received_cpu)
