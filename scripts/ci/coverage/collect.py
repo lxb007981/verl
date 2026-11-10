@@ -66,7 +66,10 @@ def initialize():
     }
     write_json(output / "manifest.json", manifest)
     shutil.copytree(ROOT / "verl", output / "covstub" / "verl", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    shutil.copyfile(ROOT / ".github/workflows" / manifest["workflow"], output / "source-workflow.yml")
+    source_workflow = ROOT / ".github/workflows" / manifest["workflow"]
+    if not source_workflow.exists():
+        source_workflow = source_workflow.with_suffix(source_workflow.suffix + ".disabled")
+    shutil.copyfile(source_workflow, output / "source-workflow.yml")
     shutil.copyfile(ROOT / "scripts/ci/npu_pytest_suites.json", output / "npu_pytest_suites.json")
     with (output / "packages.txt").open("w", encoding="utf-8") as stream:
         subprocess.run([sys.executable, "-m", "pip", "freeze"], stdout=stream, check=True)

@@ -56,10 +56,14 @@ ActionsDumper.add_representer(str, represent_string)
 
 def source_workflows():
     """Discover PR workloads, excluding collection, image builds and docs."""
-    for path in sorted((ROOT / ".github/workflows").glob("*.y*ml")):
+    directory = ROOT / ".github/workflows"
+    paths = set(directory.glob("*.y*ml"))
+    paths.update(path.with_suffix("") for path in directory.glob("*.y*ml.disabled"))
+    for path in sorted(paths):
         if not (path.name.endswith("_ascend.yml") or path.name == "npu_unit_tests.yml"):
             continue
-        source = yaml.load(path.read_text(encoding="utf-8"), Loader=ActionsLoader)
+        source_path = path if path.exists() else path.with_suffix(path.suffix + ".disabled")
+        source = yaml.load(source_path.read_text(encoding="utf-8"), Loader=ActionsLoader)
         if "pull_request" in source.get("on", {}):
             yield path, source
 
@@ -70,6 +74,8 @@ def workload(step):
         return False
     name = step.get("name", "").lower()
     if name.startswith(("check ", "install ", "prepare weights", "clean up")):
+        return False
+    if name in {"print system memory before tests", "update mindspeed-bridge checkout"}:
         return False
     if not any(token in step["run"] for token in ("tests/", "examples/", "-m verl.", "run_pytest_suite")):
         raise ValueError(f"Unclassified run step: {step.get('name')}")
@@ -185,6 +191,7 @@ def generate():
                 "paths": [
                     DESTINATION.relative_to(ROOT).as_posix(),
                     "scripts/ci/**",
+                    ".github/workflows/*.disabled",
                     *[path.relative_to(ROOT).as_posix() for path, _ in workflows],
                 ],
             },

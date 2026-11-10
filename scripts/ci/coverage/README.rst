@@ -11,10 +11,16 @@ workflow changes; remove that trigger from the generator after CI validation.
 Scope and regeneration
 ----------------------
 
+For the temporary coverage-only run, other workflow files have a ``.disabled``
+suffix. GitHub Actions does not discover these files. The generator and source
+snapshot collector still read them using their original workflow identities.
+To restore the other workflows, remove the final ``.disabled`` suffix from
+files in ``.github/workflows/``; their contents have not been changed.
+
 The generator discovers PR-triggered ``*_ascend.yml`` workflows and
-``npu_unit_tests.yml``. There are currently 13 workflows and 18 declared jobs.
+``npu_unit_tests.yml``, including temporarily disabled copies.
 The two jobs disabled by ``if: false`` in the original Megatron/SGLang workflow
-stay disabled, leaving 16 runnable jobs. Nightly, multi-node, image-build and
+stay disabled. Nightly, multi-node, image-build and
 documentation workloads are excluded. CPU test steps inside an Ascend job are
 included.
 
