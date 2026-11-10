@@ -9,10 +9,12 @@ name: Coverage Collection (Ascend PR workloads)
     paths:
     - .github/workflows/coverage-collection-npu.yml
     - scripts/ci/**
+    - .github/workflows/*.disabled
     - .github/workflows/e2e_ascend.yml
     - .github/workflows/e2e_ppo_trainer_megatron_sglang_2_ascend.yml
     - .github/workflows/e2e_ppo_trainer_megatron_sglang_ascend.yml
     - .github/workflows/e2e_ppo_trainer_megatron_vllm_2_ascend.yml
+    - .github/workflows/e2e_ppo_trainer_megatron_vllm_ascend.yml
     - .github/workflows/e2e_ppo_trainer_veomni_vllm_ascend.yml
     - .github/workflows/e2e_sft_llm_ascend.yml
     - .github/workflows/e2e_v1_separate_async_ascend.yml
@@ -45,7 +47,7 @@ jobs:
     runs-on: linux-aarch64-a3-800i-16
     timeout-minutes: 270
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
       options: --shm-size 16g
     env:
       HF_DATASETS_CACHE: /root/.cache/temp/hf-datasets
@@ -66,12 +68,12 @@ jobs:
       VERL_COVERAGE_WORKFLOW: e2e_ascend.yml
       VERL_COVERAGE_JOB: llm_rl_job
       VERL_COVERAGE_PLAN: '[{"id": "step-06", "name": "Preprocess gsm8k dataset", "entrypoints": ["examples/data_preprocess/gsm8k.py"],
-        "requires_verl_coverage": false}, {"id": "step-07", "name": "Running gsm8k e2e training tests with PPO on ASCEND NPU
+        "requires_verl_coverage": false}, {"id": "step-08", "name": "Running gsm8k e2e training tests with PPO on ASCEND NPU
         (FSDP backend)", "entrypoints": ["tests/special_npu/run_qwen3_06b_ppo.sh"], "requires_verl_coverage": true}, {"id":
-        "step-08", "name": "Running gsm8k e2e training tests with GRPO on ASCEND NPU (FSDP backend)", "entrypoints": ["tests/special_npu/run_qwen3_8b_grpo_profiling.sh",
-        "tests/utils/test_check_profiler_output.py"], "requires_verl_coverage": true}, {"id": "step-09", "name": "Running
+        "step-09", "name": "Running gsm8k e2e training tests with GRPO on ASCEND NPU (FSDP backend)", "entrypoints": ["tests/special_npu/run_qwen3_8b_grpo_profiling.sh",
+        "tests/utils/test_check_profiler_output.py"], "requires_verl_coverage": true}, {"id": "step-10", "name": "Running
         gsm8k e2e training tests with GRPO on ASCEND NPU (MindSpeed backend)", "entrypoints": ["tests/special_npu/run_qwen3_06b_grpo_mindspeed.sh"],
-        "requires_verl_coverage": true}, {"id": "step-10", "name": "Running gsm8k e2e training tests with GRPO on ASCEND NPU
+        "requires_verl_coverage": true}, {"id": "step-11", "name": "Running gsm8k e2e training tests with GRPO on ASCEND NPU
         (MindSpeed backend, MoE Model)", "entrypoints": ["tests/special_npu/run_qwen3_30b_grpo_mindspeed.sh"], "requires_verl_coverage":
         true}]'
     needs:
@@ -109,32 +111,37 @@ jobs:
       run: |
         python examples/data_preprocess/gsm8k.py --local_dataset_path /root/.cache/modelscope/dataset/openai/gsm8k
       shell: python scripts/ci/coverage/collect.py run step-06 {0}
+    - name: Print system memory before tests
+      run: |
+        awk '/^(MemTotal|MemFree|MemAvailable|Cached|Buffers|AnonPages|Shmem|Slab):/ {
+            printf "%-16s %10.3f GiB\n", $1, $2/1048576
+        }' /proc/meminfo
     - name: Running gsm8k e2e training tests with PPO on ASCEND NPU (FSDP backend)
       run: |
         ray stop --force
-        bash tests/special_npu/run_qwen3_06b_ppo.sh
+        bash tests/special_npu/run_qwen3_06b_ppo.sh trainer.n_gpus_per_node=16
         rm -rf $HOME/ckpts
-      shell: python scripts/ci/coverage/collect.py run step-07 {0}
+      shell: python scripts/ci/coverage/collect.py run step-08 {0}
     - name: Running gsm8k e2e training tests with GRPO on ASCEND NPU (FSDP backend)
       run: |
         ray stop --force
-        bash tests/special_npu/run_qwen3_8b_grpo_profiling.sh
+        PROFILE_RANKS='[2,4,10,12]' bash tests/special_npu/run_qwen3_8b_grpo_profiling.sh trainer.n_gpus_per_node=16
         python3 "tests/utils/test_check_profiler_output.py" --profiler_dir="./profiler_data-dis" --device="npu" \
           --stage actor_update actor_compute_log_prob '*_rollout_*'
         rm -rf ./profiler_data-dis
         rm -rf $HOME/ckpts
-      shell: python scripts/ci/coverage/collect.py run step-08 {0}
+      shell: python scripts/ci/coverage/collect.py run step-09 {0}
     - name: Running gsm8k e2e training tests with GRPO on ASCEND NPU (MindSpeed backend)
       run: |
         ray stop --force
-        USE_DIST_CKPT=False bash tests/special_npu/run_qwen3_06b_grpo_mindspeed.sh
+        USE_DIST_CKPT=False bash tests/special_npu/run_qwen3_06b_grpo_mindspeed.sh trainer.n_gpus_per_node=16
         rm -rf $HOME/ckpts
-      shell: python scripts/ci/coverage/collect.py run step-09 {0}
+      shell: python scripts/ci/coverage/collect.py run step-10 {0}
     - name: Running gsm8k e2e training tests with GRPO on ASCEND NPU (MindSpeed backend, MoE Model)
       run: |
         ray stop --force
-        USE_DIST_CKPT=False USE_DUMMY_MODEL=True DUMMY_MODEL_CONFIG_PATH=tests/special_e2e/ppo_trainer/expert_parallel/qwen3moe_minimal.json DUMMY_MODEL_PATH=$HOME/dist_ckpt/qwen3_30b_grpo_mindspeed bash tests/special_npu/run_qwen3_30b_grpo_mindspeed.sh
-      shell: python scripts/ci/coverage/collect.py run step-10 {0}
+        USE_DIST_CKPT=False USE_DUMMY_MODEL=True DUMMY_MODEL_CONFIG_PATH=tests/special_e2e/ppo_trainer/expert_parallel/qwen3moe_minimal.json DUMMY_MODEL_PATH=$HOME/dist_ckpt/qwen3_30b_grpo_mindspeed bash tests/special_npu/run_qwen3_30b_grpo_mindspeed.sh trainer.n_gpus_per_node=16
+      shell: python scripts/ci/coverage/collect.py run step-11 {0}
     - name: Package raw coverage (including partial runs)
       if: ${{ always() }}
       shell: bash
@@ -157,7 +164,7 @@ jobs:
     runs-on: linux-aarch64-a3-800i-16
     timeout-minutes: 350
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
       options: --shm-size 160g
     env:
       HF_DATASETS_CACHE: /root/.cache/temp/hf-datasets
@@ -171,9 +178,9 @@ jobs:
       VERL_COVERAGE_WORKFLOW: e2e_ascend.yml
       VERL_COVERAGE_JOB: vlm_rl_job
       VERL_COVERAGE_PLAN: '[{"id": "step-05", "name": "Preprocess geo3k dataset", "entrypoints": ["examples/data_preprocess/geo3k.py"],
-        "requires_verl_coverage": false}, {"id": "step-06", "name": "Running geo3k e2e training tests with GRPO on ASCEND
+        "requires_verl_coverage": false}, {"id": "step-07", "name": "Running geo3k e2e training tests with GRPO on ASCEND
         NPU", "entrypoints": ["tests/special_npu/run_qwen3_vl_8b_Instruct_fsdp2_npu.sh"], "requires_verl_coverage": true},
-        {"id": "step-07", "name": "Running geo3k e2e training tests with GRPO on ASCEND NPU (FSDP-Turbo backend)", "entrypoints":
+        {"id": "step-08", "name": "Running geo3k e2e training tests with GRPO on ASCEND NPU (FSDP-Turbo backend)", "entrypoints":
         ["tests/special_npu/run_qwen3_5_2b_fsdp_turbo.sh"], "requires_verl_coverage": true}]'
     steps:
     - name: Check npu and CANN info
@@ -205,20 +212,26 @@ jobs:
       run: |
         python examples/data_preprocess/geo3k.py --local_dataset_path ${HOME}/.cache/modelscope/dataset/hiyouga/geometry3k
       shell: python scripts/ci/coverage/collect.py run step-05 {0}
+    - name: Print system memory before tests
+      run: |
+        awk '/^(MemTotal|MemFree|MemAvailable|Cached|Buffers|AnonPages|Shmem|Slab):/ {
+            printf "%-16s %10.3f GiB\n", $1, $2/1048576
+        }' /proc/meminfo
     - name: Running geo3k e2e training tests with GRPO on ASCEND NPU
       run: |
         ray stop --force
         SAVE_FREQ=-1 TOTAL_TRAINING_STEPS=1 bash tests/special_npu/run_qwen3_vl_8b_Instruct_fsdp2_npu.sh
         rm -rf $HOME/ckpts
-      shell: python scripts/ci/coverage/collect.py run step-06 {0}
+      shell: python scripts/ci/coverage/collect.py run step-07 {0}
     - name: Running geo3k e2e training tests with GRPO on ASCEND NPU (FSDP-Turbo backend)
       run: |
         rm -rf /FSDPTurbo
         git clone https://gitcode.com/Ascend/FSDPTurbo.git /FSDPTurbo
         export PYTHONPATH=/FSDPTurbo:$PYTHONPATH
+        pip install transformers==5.21.0
         ray stop --force
         bash tests/special_npu/run_qwen3_5_2b_fsdp_turbo.sh
-      shell: python scripts/ci/coverage/collect.py run step-07 {0}
+      shell: python scripts/ci/coverage/collect.py run step-08 {0}
     - name: Package raw coverage (including partial runs)
       if: ${{ always() }}
       shell: bash
@@ -237,7 +250,7 @@ jobs:
     runs-on: linux-aarch64-a3-800i-8
     timeout-minutes: 210
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend-ci/verl/verl:latest-sglang-a3-ubuntu
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/verl/verl:latest-sglang-a3-ubuntu
       options: --shm-size 16g
     env:
       HF_DATASETS_CACHE: /root/.cache/temp/hf-datasets
@@ -327,7 +340,7 @@ jobs:
     runs-on: linux-aarch64-a3-800i-8
     timeout-minutes: 210
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend-ci/verl/verl:latest-sglang-a3-ubuntu
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/verl/verl:latest-sglang-a3-ubuntu
       options: --shm-size 16g
     env:
       VERL_USE_UV: '0'
@@ -442,7 +455,7 @@ jobs:
     runs-on: linux-aarch64-a3-800i-8
     timeout-minutes: 210
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend-ci/verl/verl:latest-sglang-a3-ubuntu
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/verl/verl:latest-sglang-a3-ubuntu
       options: --shm-size 16g
     env:
       VERL_USE_UV: '0'
@@ -534,7 +547,7 @@ jobs:
     runs-on: linux-aarch64-a3-800i-16
     timeout-minutes: 210
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
       options: --shm-size 16g
     env:
       HF_DATASETS_CACHE: /root/.cache/temp/hf-datasets
@@ -548,14 +561,14 @@ jobs:
       VERL_COVERAGE_WORKFLOW: e2e_ppo_trainer_megatron_vllm_2_ascend.yml
       VERL_COVERAGE_JOB: e2e_ppo_trainer_fsdp_vllm_ascend
       VERL_COVERAGE_PLAN: '[{"id": "step-06", "name": "Prepare GSM8K dataset", "entrypoints": ["examples/data_preprocess/gsm8k.py"],
-        "requires_verl_coverage": false}, {"id": "step-07", "name": "Running GSM8K E2E training tests on 8 L20 GPUs with rmpad
+        "requires_verl_coverage": false}, {"id": "step-08", "name": "Running GSM8K E2E training tests on 8 L20 GPUs with rmpad
         using function rm with validation and saving (DDP_SIZE=2, FSDP_SIZE=4)", "entrypoints": ["tests/special_e2e/ppo_trainer/run_function_reward.sh"],
-        "requires_verl_coverage": true}, {"id": "step-08", "name": "Test merging DDP+FSDP checkpoints (Qwen Actor)", "entrypoints":
-        [], "requires_verl_coverage": true}, {"id": "step-09", "name": "Running GSM8K E2E training tests on 8 L20 GPUs with
+        "requires_verl_coverage": true}, {"id": "step-09", "name": "Test merging DDP+FSDP checkpoints (Qwen Actor)", "entrypoints":
+        [], "requires_verl_coverage": true}, {"id": "step-10", "name": "Running GSM8K E2E training tests on 8 L20 GPUs with
         rmpad using function rm with validation and saving (FSDP2)", "entrypoints": ["tests/special_e2e/ppo_trainer/run_function_reward.sh"],
-        "requires_verl_coverage": true}, {"id": "step-10", "name": "Test merging FSDP2 checkpoints (Qwen Actor)", "entrypoints":
-        [], "requires_verl_coverage": true}, {"id": "step-11", "name": "Running GSM8K E2E without rmpad using function rm",
-        "entrypoints": ["tests/special_e2e/ppo_trainer/run_function_reward.sh"], "requires_verl_coverage": true}, {"id": "step-12",
+        "requires_verl_coverage": true}, {"id": "step-11", "name": "Test merging FSDP2 checkpoints (Qwen Actor)", "entrypoints":
+        [], "requires_verl_coverage": true}, {"id": "step-12", "name": "Running GSM8K E2E without rmpad using function rm",
+        "entrypoints": ["tests/special_e2e/ppo_trainer/run_function_reward.sh"], "requires_verl_coverage": true}, {"id": "step-13",
         "name": "Running GSM8K E2E training tests on 8 L20 GPUs with rmpad using function rm (GRPO)", "entrypoints": ["tests/special_e2e/ppo_trainer/run_function_reward.sh"],
         "requires_verl_coverage": true}]'
     needs:
@@ -598,37 +611,42 @@ jobs:
       run: |
         python examples/data_preprocess/gsm8k.py --local_dataset_path /root/.cache/modelscope/dataset/openai/gsm8k
       shell: python scripts/ci/coverage/collect.py run step-06 {0}
+    - name: Print system memory before tests
+      run: |
+        awk '/^(MemTotal|MemFree|MemAvailable|Cached|Buffers|AnonPages|Shmem|Slab):/ {
+            printf "%-16s %10.3f GiB\n", $1, $2/1048576
+        }' /proc/meminfo
     - name: Running GSM8K E2E training tests on 8 L20 GPUs with rmpad using function rm with validation and saving (DDP_SIZE=2,
         FSDP_SIZE=4)
       run: |
         ray stop --force
         NUM_GPUS=16 TRAIN_TRAJ_MICRO_BSZ_PER_GPU=4 VAL_BEFORE_TRAIN=True TEST_FREQ=1 SAVE_FREQ=1 SAVE_HF_MODEL=True FSDP_SIZE=4 USE_KL=True VERL_EXP_NAME="qwen2.5-0.5b-function-reward-minimal-ddp-size2-fsdp-size4" bash tests/special_e2e/ppo_trainer/run_function_reward.sh
-      shell: python scripts/ci/coverage/collect.py run step-07 {0}
+      shell: python scripts/ci/coverage/collect.py run step-08 {0}
     - name: Test merging DDP+FSDP checkpoints (Qwen Actor)
       run: |
         exp_name="qwen2.5-0.5b-function-reward-minimal-ddp-size2-fsdp-size4"
         python -m verl.model_merger test --backend fsdp --local_dir checkpoints/verl-test/${exp_name}/global_step_1/actor --test_hf_dir checkpoints/verl-test/${exp_name}/global_step_1/actor/huggingface
-      shell: python scripts/ci/coverage/collect.py run step-08 {0}
+      shell: python scripts/ci/coverage/collect.py run step-09 {0}
     - name: Running GSM8K E2E training tests on 8 L20 GPUs with rmpad using function rm with validation and saving (FSDP2)
       run: |
         ray stop --force
         NUM_GPUS=16 TRAIN_TRAJ_MICRO_BSZ_PER_GPU=4 VAL_BEFORE_TRAIN=True TEST_FREQ=1 SAVE_FREQ=1 SAVE_HF_MODEL=True VERL_EXP_NAME="qwen2.5-0.5b-function-reward-minimal-fsdp2-size8" STRATEGY=fsdp2 bash tests/special_e2e/ppo_trainer/run_function_reward.sh
-      shell: python scripts/ci/coverage/collect.py run step-09 {0}
+      shell: python scripts/ci/coverage/collect.py run step-10 {0}
     - name: Test merging FSDP2 checkpoints (Qwen Actor)
       run: |
         exp_name="qwen2.5-0.5b-function-reward-minimal-fsdp2-size8"
         python -m verl.model_merger test --backend fsdp --local_dir checkpoints/verl-test/${exp_name}/global_step_1/actor --test_hf_dir checkpoints/verl-test/${exp_name}/global_step_1/actor/huggingface
-      shell: python scripts/ci/coverage/collect.py run step-10 {0}
+      shell: python scripts/ci/coverage/collect.py run step-11 {0}
     - name: Running GSM8K E2E without rmpad using function rm
       run: |
         ray stop --force
         NUM_GPUS=16 TRAIN_TRAJ_MICRO_BSZ_PER_GPU=4 RM_PAD=False bash tests/special_e2e/ppo_trainer/run_function_reward.sh
-      shell: python scripts/ci/coverage/collect.py run step-11 {0}
+      shell: python scripts/ci/coverage/collect.py run step-12 {0}
     - name: Running GSM8K E2E training tests on 8 L20 GPUs with rmpad using function rm (GRPO)
       run: |
         ray stop --force
         NUM_GPUS=16 TRAIN_TRAJ_MICRO_BSZ_PER_GPU=4 CUSTOM_REWARD_FN=True ADV_ESTIMATOR=grpo USE_KL=True bash tests/special_e2e/ppo_trainer/run_function_reward.sh
-      shell: python scripts/ci/coverage/collect.py run step-12 {0}
+      shell: python scripts/ci/coverage/collect.py run step-13 {0}
     - name: Package raw coverage (including partial runs)
       if: ${{ always() }}
       shell: bash
@@ -650,7 +668,7 @@ jobs:
     runs-on: linux-aarch64-a3-800i-16
     timeout-minutes: 150
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
       options: --shm-size 16g
     env:
       HF_DATASETS_CACHE: /root/.cache/temp/hf-datasets
@@ -664,9 +682,9 @@ jobs:
       VERL_COVERAGE_WORKFLOW: e2e_ppo_trainer_megatron_vllm_2_ascend.yml
       VERL_COVERAGE_JOB: e2e_ppo_trainer_fsdp-qwen3_5-2b_ascend
       VERL_COVERAGE_PLAN: '[{"id": "step-06", "name": "Prepare GEO3K dataset", "entrypoints": ["examples/data_preprocess/geo3k.py"],
-        "requires_verl_coverage": false}, {"id": "step-07", "name": "Running GEO3K VLM GRPO E2E training tests on 8 L20 GPUs
+        "requires_verl_coverage": false}, {"id": "step-08", "name": "Running GEO3K VLM GRPO E2E training tests on 8 L20 GPUs
         with rmpad using function rm", "entrypoints": ["tests/special_e2e/ppo_trainer/run_function_reward.sh"], "requires_verl_coverage":
-        true}, {"id": "step-08", "name": "Running GEO3K VLM PPO E2E training tests on 8 L20 GPUs with rmpad using function
+        true}, {"id": "step-09", "name": "Running GEO3K VLM PPO E2E training tests on 8 L20 GPUs with rmpad using function
         rm", "entrypoints": ["tests/special_e2e/ppo_trainer/run_function_reward.sh"], "requires_verl_coverage": true}]'
     name: e2e_ppo_trainer_megatron_vllm_2_ascend.yml / e2e_ppo_trainer_fsdp-qwen3_5-2b_ascend
     steps:
@@ -708,6 +726,11 @@ jobs:
       run: |
         python examples/data_preprocess/geo3k.py --local_dataset_path ${HOME}/.cache/modelscope/dataset/hiyouga/geometry3k
       shell: python scripts/ci/coverage/collect.py run step-06 {0}
+    - name: Print system memory before tests
+      run: |
+        awk '/^(MemTotal|MemFree|MemAvailable|Cached|Buffers|AnonPages|Shmem|Slab):/ {
+            printf "%-16s %10.3f GiB\n", $1, $2/1048576
+        }' /proc/meminfo
     - name: Running GEO3K VLM GRPO E2E training tests on 8 L20 GPUs with rmpad using function rm
       run: |
         ray stop --force
@@ -716,7 +739,7 @@ jobs:
           MODEL_ID=Qwen/Qwen3.5-2B \
           ADV_ESTIMATOR=grpo RM_PAD=True USE_KL=True \
           bash tests/special_e2e/ppo_trainer/run_function_reward.sh
-      shell: python scripts/ci/coverage/collect.py run step-07 {0}
+      shell: python scripts/ci/coverage/collect.py run step-08 {0}
     - name: Running GEO3K VLM PPO E2E training tests on 8 L20 GPUs with rmpad using function rm
       run: |
         ray stop --force
@@ -725,7 +748,7 @@ jobs:
           MODEL_ID=Qwen/Qwen3.5-2B \
           ADV_ESTIMATOR=gae RM_PAD=True USE_KL=True \
           bash tests/special_e2e/ppo_trainer/run_function_reward.sh
-      shell: python scripts/ci/coverage/collect.py run step-08 {0}
+      shell: python scripts/ci/coverage/collect.py run step-09 {0}
     - name: Package raw coverage (including partial runs)
       if: ${{ always() }}
       shell: bash
@@ -739,12 +762,104 @@ jobs:
         compression-level: 0
         if-no-files-found: warn
         retention-days: 14
+  e2e_ppo_trainer_megatron_vllm_ascend__1:
+    if: ${{ github.repository_owner == 'verl-project' && (github.repository_owner == 'verl-project') }}
+    name: e2e_ppo_trainer_megatron_vllm_ascend.yml / e2e_ppo_trainer_megatron-qwen3_5-35b_ascend
+    runs-on: linux-aarch64-a3-800i-16
+    timeout-minutes: 270
+    container:
+      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
+      options: --shm-size 60g
+    env:
+      HF_DATASETS_CACHE: /root/.cache/temp/hf-datasets
+      MEGATRON_CONFIG_LOCK_DIR: /root/.cache/temp/megatron-config-locks
+      HF_ENDPOINT: https://hf-mirror.com
+      HF_HUB_ENABLE_HF_TRANSFER: '0'
+      PIP_INDEX_URL: http://cache-service.nginx-pypi-cache.svc.cluster.local/pypi/simple
+      PIP_TRUSTED_HOST: cache-service.nginx-pypi-cache.svc.cluster.local
+      TRANSFORMERS_VERBOSITY: error
+      VERL_COVERAGE_ROOT: ${{ github.workspace }}/.ci-coverage/${{ github.run_id }}-${{ github.run_attempt }}/e2e_ppo_trainer_megatron_vllm_ascend__1/data
+      VERL_COVERAGE_WORKFLOW: e2e_ppo_trainer_megatron_vllm_ascend.yml
+      VERL_COVERAGE_JOB: e2e_ppo_trainer_megatron-qwen3_5-35b_ascend
+      VERL_COVERAGE_PLAN: '[{"id": "step-06", "name": "Preprocess geo3k dataset", "entrypoints": ["examples/data_preprocess/geo3k.py"],
+        "requires_verl_coverage": false}, {"id": "step-08", "name": "Running GRPO Qwen3.5-35B Megatron E2E training test on
+        Ascend NPUs", "entrypoints": ["tests/special_npu/run_qwen3_5_35b_grpo_megatron.sh"], "requires_verl_coverage": true}]'
+    needs:
+    - validate
+    steps:
+    - name: Check npu and CANN info
+      run: |
+        cat /usr/local/Ascend/ascend-toolkit/latest/"$(uname -i)"-linux/ascend_toolkit_install.info
+        npu-smi info
+    - name: Check initial pip list from image
+      run: |
+        pip list
+    - name: Checkout verl-project/verl repo
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        clean: true
+        persist-credentials: false
+    - name: Install the current repository
+      run: |
+        pip install --no-deps -e .
+        pip install --no-deps TransferQueue==0.1.11
+    - name: Update MindSpeed-Bridge checkout
+      run: |
+        # The image ships a MindSpeed-Bridge snapshot frozen at image build
+        # time; fla_npu >= v26.9.0 dropped the legacy torch.ops.npu.*
+        # registration and current bridge calls the operators through the
+        # stable fla_npu.ops.ascendc entry instead. Refresh the editable
+        # install (pip install -e /MindSpeed-Bridge) to the current master.
+        cd /MindSpeed-Bridge
+        git fetch --depth 1 origin master
+        git checkout --detach FETCH_HEAD
+        grep -q "from fla_npu.ops import ascendc" \
+          mindspeed_bridge/models/qwen_vl/modelling_qwen3_vl/flash_gated_delta_rule.py
+    - name: Check final pip list
+      run: |
+        pip list
+    - name: Initialize branch coverage collection
+      run: |
+        command -v uv >/dev/null || python -m pip install uv
+        uv pip install --python "$(python -c 'import sys; print(sys.executable)')" "coverage==7.8.2"
+        python scripts/ci/coverage/collect.py init
+      shell: bash
+    - name: Preprocess geo3k dataset
+      run: |
+        python examples/data_preprocess/geo3k.py --local_dataset_path ${HOME}/.cache/modelscope/dataset/hiyouga/geometry3k
+      shell: python scripts/ci/coverage/collect.py run step-06 {0}
+    - name: Print system memory before tests
+      run: |
+        awk '/^(MemTotal|MemFree|MemAvailable|Cached|Buffers|AnonPages|Shmem|Slab):/ {
+            printf "%-16s %10.3f GiB\n", $1, $2/1048576
+        }' /proc/meminfo
+    - name: Running GRPO Qwen3.5-35B Megatron E2E training test on Ascend NPUs
+      env:
+        MODEL_PATH: /root/.cache/modelscope/hub/models/Qwen/Qwen3.5-35B-A3B
+      run: |
+        ray stop --force
+        bash tests/special_npu/run_qwen3_5_35b_grpo_megatron.sh
+      shell: python scripts/ci/coverage/collect.py run step-08 {0}
+    - name: Package raw coverage (including partial runs)
+      if: ${{ always() }}
+      shell: bash
+      run: python scripts/ci/coverage/collect.py package
+    - name: Retain raw coverage artifact
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ascend-coverage-e2e_ppo_trainer_megatron_vllm_ascend__1-${{ github.run_attempt }}
+        path: ${{ env.VERL_COVERAGE_ROOT }}/../coverage.tar.gz
+        compression-level: 0
+        if-no-files-found: warn
+        retention-days: 14
   e2e_ppo_trainer_veomni_vllm_ascend__1:
     if: ${{ github.repository_owner == 'verl-project' && (github.repository_owner == 'verl-project') }}
     runs-on: linux-aarch64-a3-800i-16
     timeout-minutes: 150
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
       options: --shm-size 16g
     env:
       HF_DATASETS_CACHE: /root/.cache/temp/hf-datasets
@@ -758,11 +873,11 @@ jobs:
       VERL_COVERAGE_WORKFLOW: e2e_ppo_trainer_veomni_vllm_ascend.yml
       VERL_COVERAGE_JOB: e2e_ppo_trainer_veomni_vllm_ascend
       VERL_COVERAGE_PLAN: '[{"id": "step-06", "name": "Prepare GSM8K dataset", "entrypoints": ["examples/data_preprocess/gsm8k.py"],
-        "requires_verl_coverage": false}, {"id": "step-07", "name": "Running the E2E test with veomni backend", "entrypoints":
-        ["tests/special_e2e/run_ppo_trainer_veomni.sh"], "requires_verl_coverage": true}, {"id": "step-09", "name": "Preprocess
-        geo3k dataset", "entrypoints": ["examples/data_preprocess/geo3k.py"], "requires_verl_coverage": false}, {"id": "step-10",
+        "requires_verl_coverage": false}, {"id": "step-08", "name": "Running the E2E test with veomni backend", "entrypoints":
+        ["tests/special_e2e/run_ppo_trainer_veomni.sh"], "requires_verl_coverage": true}, {"id": "step-10", "name": "Preprocess
+        geo3k dataset", "entrypoints": ["examples/data_preprocess/geo3k.py"], "requires_verl_coverage": false}, {"id": "step-11",
         "name": "Running GEO3K E2E training tests on 8 L20 GPUs with veomni engine (FSDP_SIZE=8, USP=1)", "entrypoints": ["tests/special_e2e/run_ppo_trainer_veomni.sh"],
-        "requires_verl_coverage": true}, {"id": "step-12", "name": "Test export unfused experts", "entrypoints": ["tests/utils/veomni/test_special_export_unfused_experts.py"],
+        "requires_verl_coverage": true}, {"id": "step-13", "name": "Test export unfused experts", "entrypoints": ["tests/utils/veomni/test_special_export_unfused_experts.py"],
         "requires_verl_coverage": true}]'
     needs:
     - validate
@@ -801,11 +916,16 @@ jobs:
       run: |
         python examples/data_preprocess/gsm8k.py --local_dataset_path ${HOME}/.cache/modelscope/dataset/openai/gsm8k
       shell: python scripts/ci/coverage/collect.py run step-06 {0}
+    - name: Print system memory before tests
+      run: |
+        awk '/^(MemTotal|MemFree|MemAvailable|Cached|Buffers|AnonPages|Shmem|Slab):/ {
+            printf "%-16s %10.3f GiB\n", $1, $2/1048576
+        }' /proc/meminfo
     - name: Running the E2E test with veomni backend
       run: |
         ray stop --force
         NUM_GPUS=16 MINI_BATCH_SIZE=16 bash tests/special_e2e/run_ppo_trainer_veomni.sh actor_rollout_ref.rollout.enable_chunked_prefill=True
-      shell: python scripts/ci/coverage/collect.py run step-07 {0}
+      shell: python scripts/ci/coverage/collect.py run step-08 {0}
     - name: Clean up GSM8K Ray and vLLM processes
       if: ${{ always() }}
       run: |
@@ -817,11 +937,11 @@ jobs:
     - name: Preprocess geo3k dataset
       run: |
         python examples/data_preprocess/geo3k.py --local_dataset_path ${HOME}/.cache/modelscope/dataset/hiyouga/geometry3k
-      shell: python scripts/ci/coverage/collect.py run step-09 {0}
+      shell: python scripts/ci/coverage/collect.py run step-10 {0}
     - name: Running GEO3K E2E training tests on 8 L20 GPUs with veomni engine (FSDP_SIZE=8, USP=1)
       run: |
         NUM_GPUS=16 MINI_BATCH_SIZE=16 MODEL_ID=Qwen/Qwen3-VL-2B-Instruct TRAIN_FILES=${HOME}/data/geo3k/train.parquet VAL_FILES=${HOME}/data/gsm8k/test.parquet FSDP_SIZE=8 SP_SIZE=1 bash tests/special_e2e/run_ppo_trainer_veomni.sh actor_rollout_ref.rollout.enable_chunked_prefill=True
-      shell: python scripts/ci/coverage/collect.py run step-10 {0}
+      shell: python scripts/ci/coverage/collect.py run step-11 {0}
     - name: Clean up GEO3K Ray and vLLM processes
       if: ${{ always() }}
       run: |
@@ -833,7 +953,7 @@ jobs:
     - name: Test export unfused experts
       run: |
         torchrun --nproc_per_node=8 tests/utils/veomni/test_special_export_unfused_experts.py
-      shell: python scripts/ci/coverage/collect.py run step-12 {0}
+      shell: python scripts/ci/coverage/collect.py run step-13 {0}
     - name: Package raw coverage (including partial runs)
       if: ${{ always() }}
       shell: bash
@@ -852,7 +972,7 @@ jobs:
     runs-on: linux-aarch64-a3-800i-8
     timeout-minutes: 210
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
       options: --shm-size 16g
     env:
       HF_DATASETS_CACHE: /root/.cache/temp/hf-datasets
@@ -866,14 +986,14 @@ jobs:
       VERL_COVERAGE_WORKFLOW: e2e_sft_llm_ascend.yml
       VERL_COVERAGE_JOB: e2e_sft_llm_ascend
       VERL_COVERAGE_PLAN: '[{"id": "step-06", "name": "Prepare gsm8k dataset", "entrypoints": ["examples/data_preprocess/gsm8k_multiturn_sft.py"],
-        "requires_verl_coverage": false}, {"id": "step-07", "name": "Running GSM8K E2E training tests on 8 NPUs with rmpad
-        using function rm", "entrypoints": ["tests/special_e2e/sft/run_sft.sh"], "requires_verl_coverage": true}, {"id": "step-08",
+        "requires_verl_coverage": false}, {"id": "step-08", "name": "Running GSM8K E2E training tests on 8 NPUs with rmpad
+        using function rm", "entrypoints": ["tests/special_e2e/sft/run_sft.sh"], "requires_verl_coverage": true}, {"id": "step-09",
         "name": "Running GSM8K E2E training tests on 8 NPUs w/o rmpad using function rm", "entrypoints": ["tests/special_e2e/sft/run_sft.sh"],
-        "requires_verl_coverage": true}, {"id": "step-09", "name": "Running GSM8K E2E training tests on 8 NPUs with sequence
-        parallism", "entrypoints": ["tests/special_e2e/sft/run_sft.sh"], "requires_verl_coverage": true}, {"id": "step-10",
+        "requires_verl_coverage": true}, {"id": "step-10", "name": "Running GSM8K E2E training tests on 8 NPUs with sequence
+        parallism", "entrypoints": ["tests/special_e2e/sft/run_sft.sh"], "requires_verl_coverage": true}, {"id": "step-11",
         "name": "Running GSM8K E2E training tests with LoRA", "entrypoints": ["tests/special_e2e/sft/run_sft.sh"], "requires_verl_coverage":
-        true}, {"id": "step-11", "name": "Run GSM8K E2E training and resume tests resuming from the checkpoint manager", "entrypoints":
-        ["tests/special_e2e/sft/run_sft.sh"], "requires_verl_coverage": true}, {"id": "step-12", "name": "Running GSM8K E2E
+        true}, {"id": "step-12", "name": "Run GSM8K E2E training and resume tests resuming from the checkpoint manager", "entrypoints":
+        ["tests/special_e2e/sft/run_sft.sh"], "requires_verl_coverage": true}, {"id": "step-13", "name": "Running GSM8K E2E
         training tests with multiturn and various configs and compare results", "entrypoints": ["tests/special_e2e/sft/run_sft_engine.sh"],
         "requires_verl_coverage": true}]'
     needs:
@@ -942,31 +1062,36 @@ jobs:
       run: |
         python3 examples/data_preprocess/gsm8k_multiturn_sft.py --local_dataset_path ${HOME}/.cache/modelscope/dataset/openai/gsm8k
       shell: python scripts/ci/coverage/collect.py run step-06 {0}
+    - name: Print system memory before tests
+      run: |
+        awk '/^(MemTotal|MemFree|MemAvailable|Cached|Buffers|AnonPages|Shmem|Slab):/ {
+            printf "%-16s %10.3f GiB\n", $1, $2/1048576
+        }' /proc/meminfo
     - name: Running GSM8K E2E training tests on 8 NPUs with rmpad using function rm
       run: |
         ray stop --force
         bash tests/special_e2e/sft/run_sft.sh
-      shell: python scripts/ci/coverage/collect.py run step-07 {0}
+      shell: python scripts/ci/coverage/collect.py run step-08 {0}
     - name: Running GSM8K E2E training tests on 8 NPUs w/o rmpad using function rm
       run: |
         ray stop --force
         RM_PAD=False bash tests/special_e2e/sft/run_sft.sh
-      shell: python scripts/ci/coverage/collect.py run step-08 {0}
+      shell: python scripts/ci/coverage/collect.py run step-09 {0}
     - name: Running GSM8K E2E training tests on 8 NPUs with sequence parallism
       run: |
         ray stop --force
         SP_SIZE=2 bash tests/special_e2e/sft/run_sft.sh
-      shell: python scripts/ci/coverage/collect.py run step-09 {0}
+      shell: python scripts/ci/coverage/collect.py run step-10 {0}
     - name: Running GSM8K E2E training tests with LoRA
       run: |
         ray stop --force
         LORA_RANK=32 bash tests/special_e2e/sft/run_sft.sh
-      shell: python scripts/ci/coverage/collect.py run step-10 {0}
+      shell: python scripts/ci/coverage/collect.py run step-11 {0}
     - name: Run GSM8K E2E training and resume tests resuming from the checkpoint manager
       run: |
         ray stop --force
         LORA_RANK=32 RESUME_MODE=auto TOTAL_TRAIN_STEP=2 bash tests/special_e2e/sft/run_sft.sh
-      shell: python scripts/ci/coverage/collect.py run step-11 {0}
+      shell: python scripts/ci/coverage/collect.py run step-12 {0}
     - name: Running GSM8K E2E training tests with multiturn and various configs and compare results
       run: |
         ray stop --force
@@ -995,7 +1120,7 @@ jobs:
         echo "run with tp2 pp2 vpp2 cp2 num_gpus8 mode=ray"
         BACKEND=megatron TP_SIZE=2 PP_SIZE=2 VPP_SIZE=NULL CP_SIZE=2 NUM_GPUS=8 mode=ray bash tests/special_e2e/sft/run_sft_engine.sh
         rm -rf ~/verl/test/log
-      shell: python scripts/ci/coverage/collect.py run step-12 {0}
+      shell: python scripts/ci/coverage/collect.py run step-13 {0}
     - name: Package raw coverage (including partial runs)
       if: ${{ always() }}
       shell: bash
@@ -1014,7 +1139,7 @@ jobs:
     runs-on: linux-aarch64-a3-800i-16
     timeout-minutes: 150
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
       options: --shm-size 16g
     env:
       HF_DATASETS_CACHE: /root/.cache/temp/hf-datasets
@@ -1038,7 +1163,7 @@ jobs:
       VERL_COVERAGE_WORKFLOW: e2e_v1_separate_async_ascend.yml
       VERL_COVERAGE_JOB: e2e_v1_separate_async_fsdp2_ascend
       VERL_COVERAGE_PLAN: '[{"id": "step-07", "name": "Prepare GSM8K dataset", "entrypoints": ["examples/data_preprocess/gsm8k.py"],
-        "requires_verl_coverage": false}, {"id": "step-08", "name": "Run V1 separate_async with FSDP2", "entrypoints": ["tests/special_e2e/run_v1_separate_async_ascend.sh"],
+        "requires_verl_coverage": false}, {"id": "step-09", "name": "Run V1 separate_async with FSDP2", "entrypoints": ["tests/special_e2e/run_v1_separate_async_ascend.sh"],
         "requires_verl_coverage": true}]'
     needs:
     - validate
@@ -1074,11 +1199,16 @@ jobs:
     - name: Prepare GSM8K dataset
       run: python examples/data_preprocess/gsm8k.py --local_dataset_path "${HOME}/.cache/modelscope/dataset/openai/gsm8k"
       shell: python scripts/ci/coverage/collect.py run step-07 {0}
+    - name: Print system memory before tests
+      run: |
+        awk '/^(MemTotal|MemFree|MemAvailable|Cached|Buffers|AnonPages|Shmem|Slab):/ {
+            printf "%-16s %10.3f GiB\n", $1, $2/1048576
+        }' /proc/meminfo
     - name: Run V1 separate_async with FSDP2
       run: |
         ray stop --force
         bash tests/special_e2e/run_v1_separate_async_ascend.sh
-      shell: python scripts/ci/coverage/collect.py run step-08 {0}
+      shell: python scripts/ci/coverage/collect.py run step-09 {0}
     - name: Package raw coverage (including partial runs)
       if: ${{ always() }}
       shell: bash
@@ -1100,7 +1230,7 @@ jobs:
     runs-on: linux-aarch64-a3-800i-16
     timeout-minutes: 150
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
       options: --shm-size 16g
     env:
       HF_DATASETS_CACHE: /root/.cache/temp/hf-datasets
@@ -1124,7 +1254,7 @@ jobs:
       VERL_COVERAGE_WORKFLOW: e2e_v1_separate_async_ascend.yml
       VERL_COVERAGE_JOB: e2e_v1_separate_async_megatron_ascend
       VERL_COVERAGE_PLAN: '[{"id": "step-07", "name": "Prepare GSM8K dataset", "entrypoints": ["examples/data_preprocess/gsm8k.py"],
-        "requires_verl_coverage": false}, {"id": "step-08", "name": "Run V1 separate_async with Megatron", "entrypoints":
+        "requires_verl_coverage": false}, {"id": "step-09", "name": "Run V1 separate_async with Megatron", "entrypoints":
         ["tests/special_e2e/run_v1_separate_async_ascend.sh"], "requires_verl_coverage": true}]'
     name: e2e_v1_separate_async_ascend.yml / e2e_v1_separate_async_megatron_ascend
     steps:
@@ -1158,11 +1288,16 @@ jobs:
     - name: Prepare GSM8K dataset
       run: python examples/data_preprocess/gsm8k.py --local_dataset_path "${HOME}/.cache/modelscope/dataset/openai/gsm8k"
       shell: python scripts/ci/coverage/collect.py run step-07 {0}
+    - name: Print system memory before tests
+      run: |
+        awk '/^(MemTotal|MemFree|MemAvailable|Cached|Buffers|AnonPages|Shmem|Slab):/ {
+            printf "%-16s %10.3f GiB\n", $1, $2/1048576
+        }' /proc/meminfo
     - name: Run V1 separate_async with Megatron
       run: |
         ray stop --force
         bash tests/special_e2e/run_v1_separate_async_ascend.sh
-      shell: python scripts/ci/coverage/collect.py run step-08 {0}
+      shell: python scripts/ci/coverage/collect.py run step-09 {0}
     - name: Package raw coverage (including partial runs)
       if: ${{ always() }}
       shell: bash
@@ -1181,7 +1316,7 @@ jobs:
     runs-on: linux-aarch64-a3-800i-8
     timeout-minutes: 150
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
       options: --shm-size 16g
     env:
       MEGATRON_CONFIG_LOCK_DIR: /root/.cache/temp/megatron-config-locks
@@ -1193,11 +1328,11 @@ jobs:
       VERL_COVERAGE_ROOT: ${{ github.workspace }}/.ci-coverage/${{ github.run_id }}-${{ github.run_attempt }}/model_ascend__1/data
       VERL_COVERAGE_WORKFLOW: model_ascend.yml
       VERL_COVERAGE_JOB: model_rmpad_ascend
-      VERL_COVERAGE_PLAN: '[{"id": "step-06", "name": "Running rmpad model tests on 8 NPUs", "entrypoints": ["tests/models/test_transformer.py"],
-        "requires_verl_coverage": true}, {"id": "step-07", "name": "Running FSDP rmpad model tests on 8 NPUs", "entrypoints":
-        ["tests/special_distributed/test_fsdp_ckpt.py"], "requires_verl_coverage": true}, {"id": "step-08", "name": "Running
+      VERL_COVERAGE_PLAN: '[{"id": "step-07", "name": "Running rmpad model tests on 8 NPUs", "entrypoints": ["tests/models/test_transformer.py"],
+        "requires_verl_coverage": true}, {"id": "step-08", "name": "Running FSDP rmpad model tests on 8 NPUs", "entrypoints":
+        ["tests/special_distributed/test_fsdp_ckpt.py"], "requires_verl_coverage": true}, {"id": "step-09", "name": "Running
         transformers ulysses tests on 8 NPUs", "entrypoints": ["tests/models/test_transformers_ulysses.py"], "requires_verl_coverage":
-        true}, {"id": "step-09", "name": "Run distributed test", "entrypoints": ["tests/special_distributed/run_all.sh"],
+        true}, {"id": "step-10", "name": "Run distributed test", "entrypoints": ["tests/special_distributed/run_all.sh"],
         "requires_verl_coverage": true}]'
     needs:
     - validate
@@ -1224,6 +1359,11 @@ jobs:
     - name: Prepare weights
       run: |
         ln -s /root/.cache/modelscope/hub/models ~/models
+    - name: Print system memory before tests
+      run: |
+        awk '/^(MemTotal|MemFree|MemAvailable|Cached|Buffers|AnonPages|Shmem|Slab):/ {
+            printf "%-16s %10.3f GiB\n", $1, $2/1048576
+        }' /proc/meminfo
     - name: Initialize branch coverage collection
       run: |
         command -v uv >/dev/null || python -m pip install uv
@@ -1233,19 +1373,19 @@ jobs:
     - name: Running rmpad model tests on 8 NPUs
       run: |
         pytest -s tests/models/test_transformer.py
-      shell: python scripts/ci/coverage/collect.py run step-06 {0}
+      shell: python scripts/ci/coverage/collect.py run step-07 {0}
     - name: Running FSDP rmpad model tests on 8 NPUs
       run: |
         STRATEGY=fsdp torchrun --nproc_per_node=8 tests/special_distributed/test_fsdp_ckpt.py
-      shell: python scripts/ci/coverage/collect.py run step-07 {0}
+      shell: python scripts/ci/coverage/collect.py run step-08 {0}
     - name: Running transformers ulysses tests on 8 NPUs
       run: |
         torchrun --nproc_per_node=8 -m pytest tests/models/test_transformers_ulysses.py
-      shell: python scripts/ci/coverage/collect.py run step-08 {0}
+      shell: python scripts/ci/coverage/collect.py run step-09 {0}
     - name: Run distributed test
       run: |
         bash tests/special_distributed/run_all.sh
-      shell: python scripts/ci/coverage/collect.py run step-09 {0}
+      shell: python scripts/ci/coverage/collect.py run step-10 {0}
     - name: Package raw coverage (including partial runs)
       if: ${{ always() }}
       shell: bash
@@ -1264,7 +1404,7 @@ jobs:
     runs-on: linux-aarch64-a3-800i-8
     timeout-minutes: 150
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
       options: --shm-size 16g
     env:
       MEGATRON_CONFIG_LOCK_DIR: /root/.cache/temp/megatron-config-locks
@@ -1277,8 +1417,8 @@ jobs:
       VERL_COVERAGE_ROOT: ${{ github.workspace }}/.ci-coverage/${{ github.run_id }}-${{ github.run_attempt }}/model_ascend__2/data
       VERL_COVERAGE_WORKFLOW: model_ascend.yml
       VERL_COVERAGE_JOB: model_rmpad_fsdp2_unstable_ascend
-      VERL_COVERAGE_PLAN: '[{"id": "step-05", "name": "Running FSDP2 rmpad model tests on 8 NPUs", "entrypoints": ["tests/special_distributed/test_fsdp_ckpt.py"],
-        "requires_verl_coverage": true}, {"id": "step-06", "name": "Running model_engine_ascend", "entrypoints": ["tests/models/test_engine.py"],
+      VERL_COVERAGE_PLAN: '[{"id": "step-06", "name": "Running FSDP2 rmpad model tests on 8 NPUs", "entrypoints": ["tests/special_distributed/test_fsdp_ckpt.py"],
+        "requires_verl_coverage": true}, {"id": "step-07", "name": "Running model_engine_ascend", "entrypoints": ["tests/models/test_engine.py"],
         "requires_verl_coverage": true}]'
     needs:
     - validate
@@ -1302,6 +1442,11 @@ jobs:
     - name: Prepare weights
       run: |
         ln -s /root/.cache/modelscope/hub/models ~/models
+    - name: Print system memory before tests
+      run: |
+        awk '/^(MemTotal|MemFree|MemAvailable|Cached|Buffers|AnonPages|Shmem|Slab):/ {
+            printf "%-16s %10.3f GiB\n", $1, $2/1048576
+        }' /proc/meminfo
     - name: Initialize branch coverage collection
       run: |
         command -v uv >/dev/null || python -m pip install uv
@@ -1311,14 +1456,14 @@ jobs:
     - name: Running FSDP2 rmpad model tests on 8 NPUs
       run: |
         STRATEGY=fsdp2 torchrun --nproc_per_node=8 tests/special_distributed/test_fsdp_ckpt.py
-      shell: python scripts/ci/coverage/collect.py run step-05 {0}
+      shell: python scripts/ci/coverage/collect.py run step-06 {0}
     - name: Running model_engine_ascend
       env:
         PYTEST_DEBUG_TEMPROOT: /root/.cache/temp
       run: |
         ray stop --force
-        pytest tests/models/test_engine.py
-      shell: python scripts/ci/coverage/collect.py run step-06 {0}
+        pytest tests/models/test_engine.py --override-ini tmp_path_retention_policy=none
+      shell: python scripts/ci/coverage/collect.py run step-07 {0}
     - name: Package raw coverage (including partial runs)
       if: ${{ always() }}
       shell: bash
@@ -1337,7 +1482,7 @@ jobs:
     runs-on: linux-aarch64-a3-800i-8
     timeout-minutes: 150
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
       options: --shm-size 16g
     env:
       HF_ENDPOINT: https://hf-mirror.com
@@ -1355,11 +1500,11 @@ jobs:
       VERL_COVERAGE_ROOT: ${{ github.workspace }}/.ci-coverage/${{ github.run_id }}-${{ github.run_attempt }}/npu_unit_tests__1/data
       VERL_COVERAGE_WORKFLOW: npu_unit_tests.yml
       VERL_COVERAGE_JOB: npu_unit_tests
-      VERL_COVERAGE_PLAN: '[{"id": "step-07", "name": "Run all NPU unit tests", "entrypoints": [], "requires_verl_coverage":
-        true}, {"id": "step-08", "name": "Running NPU profiling unit tests", "entrypoints": [], "requires_verl_coverage":
-        true}, {"id": "step-09", "name": "Running FSDP2 NPU model transfer regression", "entrypoints": ["tests/special_distributed/test_fsdp2_model_cpu_offload.py"],
-        "requires_verl_coverage": true}, {"id": "step-10", "name": "Running NPU checkpoint_engine unit tests", "entrypoints":
-        [], "requires_verl_coverage": true}, {"id": "step-11", "name": "Running CPU checkpoint_engine unit tests", "entrypoints":
+      VERL_COVERAGE_PLAN: '[{"id": "step-08", "name": "Run all NPU unit tests", "entrypoints": [], "requires_verl_coverage":
+        true}, {"id": "step-09", "name": "Running NPU profiling unit tests", "entrypoints": [], "requires_verl_coverage":
+        true}, {"id": "step-10", "name": "Running FSDP2 NPU model transfer regression", "entrypoints": ["tests/special_distributed/test_fsdp2_model_cpu_offload.py"],
+        "requires_verl_coverage": true}, {"id": "step-11", "name": "Running NPU checkpoint_engine unit tests", "entrypoints":
+        [], "requires_verl_coverage": true}, {"id": "step-12", "name": "Running CPU checkpoint_engine unit tests", "entrypoints":
         ["tests/checkpoint_engine/test_global_steps_on_cpu.py"], "requires_verl_coverage": true}]'
     needs:
     - validate
@@ -1390,6 +1535,11 @@ jobs:
     - name: Prepare weights
       run: |
         ln -s /root/.cache/modelscope/hub/models ~/models
+    - name: Print system memory before tests
+      run: |
+        awk '/^(MemTotal|MemFree|MemAvailable|Cached|Buffers|AnonPages|Shmem|Slab):/ {
+            printf "%-16s %10.3f GiB\n", $1, $2/1048576
+        }' /proc/meminfo
     - name: Initialize branch coverage collection
       run: |
         command -v uv >/dev/null || python -m pip install uv
@@ -1401,23 +1551,23 @@ jobs:
         # Keep pytest options out of sys.argv: MegatronAdaptor parses it during imports.
         # -c also avoids a <stdin> main module that multiprocessing.spawn cannot reload.
         python -c 'from scripts.ci.collect_npu_coverage import run_pytest_suite; run_pytest_suite("unit")'
-      shell: python scripts/ci/coverage/collect.py run step-07 {0}
+      shell: python scripts/ci/coverage/collect.py run step-08 {0}
     - name: Running NPU profiling unit tests
       run: |
         # Keep pytest options out of sys.argv: MegatronAdaptor parses it during imports.
         # -c also avoids a <stdin> main module that multiprocessing.spawn cannot reload.
         python -c 'from scripts.ci.collect_npu_coverage import run_pytest_suite; run_pytest_suite("profiling")'
-      shell: python scripts/ci/coverage/collect.py run step-08 {0}
+      shell: python scripts/ci/coverage/collect.py run step-09 {0}
     - name: Running FSDP2 NPU model transfer regression
       run: |
         PYTHONPATH="$PWD:$PYTHONPATH" torchrun --standalone --nproc-per-node=2 tests/special_distributed/test_fsdp2_model_cpu_offload.py
-      shell: python scripts/ci/coverage/collect.py run step-09 {0}
+      shell: python scripts/ci/coverage/collect.py run step-10 {0}
     - name: Running NPU checkpoint_engine unit tests
       run: |
         # Keep pytest options out of sys.argv: MegatronAdaptor parses it during imports.
         # -c also avoids a <stdin> main module that multiprocessing.spawn cannot reload.
         python -c 'from scripts.ci.collect_npu_coverage import run_pytest_suite; run_pytest_suite("checkpoint_npu")'
-      shell: python scripts/ci/coverage/collect.py run step-10 {0}
+      shell: python scripts/ci/coverage/collect.py run step-11 {0}
     - name: Running CPU checkpoint_engine unit tests
       run: |
         # Keep pytest options out of sys.argv: MegatronAdaptor parses it during imports.
@@ -1431,7 +1581,7 @@ jobs:
             "tests/checkpoint_engine/test_global_steps_on_cpu.py",
         ]))
         '
-      shell: python scripts/ci/coverage/collect.py run step-11 {0}
+      shell: python scripts/ci/coverage/collect.py run step-12 {0}
     - name: Package raw coverage (including partial runs)
       if: ${{ always() }}
       shell: bash
@@ -1450,7 +1600,7 @@ jobs:
     runs-on: linux-aarch64-a3-800i-8
     timeout-minutes: 150
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend-ci/verl/verl:latest-sglang-a3-ubuntu
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/verl/verl:latest-sglang-a3-ubuntu
       options: --shm-size 16g
     env:
       HF_DATASETS_CACHE: /root/.cache/temp/hf-datasets
@@ -1544,7 +1694,7 @@ jobs:
     runs-on: linux-aarch64-a3-800i-8
     timeout-minutes: 150
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
       options: --shm-size 16g
     env:
       HF_DATASETS_CACHE: /root/.cache/temp/hf-datasets
@@ -1557,12 +1707,12 @@ jobs:
       VERL_COVERAGE_WORKFLOW: reward_model_vllm_ascend.yml
       VERL_COVERAGE_JOB: reward_model_vllm_ascend
       VERL_COVERAGE_PLAN: '[{"id": "step-06", "name": "Prepare gsm8k dataset", "entrypoints": ["examples/data_preprocess/gsm8k.py"],
-        "requires_verl_coverage": false}, {"id": "step-07", "name": "Running vllm generative reward model tests on 8 NPUs",
+        "requires_verl_coverage": false}, {"id": "step-08", "name": "Running vllm generative reward model tests on 8 NPUs",
         "entrypoints": ["tests/experimental/reward_loop/test_reward_model_genrm.py"], "requires_verl_coverage": true}, {"id":
-        "step-08", "name": "Running vllm discriminative reward model tests on 8 NPUs", "entrypoints": ["tests/experimental/reward_loop/test_reward_model_disrm.py"],
-        "requires_verl_coverage": true}, {"id": "step-09", "name": "Running vllm agent loop with reward manager tests on 8
+        "step-09", "name": "Running vllm discriminative reward model tests on 8 NPUs", "entrypoints": ["tests/experimental/reward_loop/test_reward_model_disrm.py"],
+        "requires_verl_coverage": true}, {"id": "step-10", "name": "Running vllm agent loop with reward manager tests on 8
         NPUs", "entrypoints": ["tests/experimental/reward_loop/test_agent_reward_loop_standalone.py"], "requires_verl_coverage":
-        true}, {"id": "step-10", "name": "Running vllm agent loop with reward model colocate tests on 8 NPUs", "entrypoints":
+        true}, {"id": "step-11", "name": "Running vllm agent loop with reward model colocate tests on 8 NPUs", "entrypoints":
         ["tests/experimental/reward_loop/test_agent_reward_loop_colocate.py"], "requires_verl_coverage": true}]'
     needs:
     - validate
@@ -1600,24 +1750,29 @@ jobs:
         ray stop --force
         python3 examples/data_preprocess/gsm8k.py --local_dataset_path ${HOME}/.cache/modelscope/dataset/openai/gsm8k --local_dir ${HOME}/data/gsm8k
       shell: python scripts/ci/coverage/collect.py run step-06 {0}
+    - name: Print system memory before tests
+      run: |
+        awk '/^(MemTotal|MemFree|MemAvailable|Cached|Buffers|AnonPages|Shmem|Slab):/ {
+            printf "%-16s %10.3f GiB\n", $1, $2/1048576
+        }' /proc/meminfo
     - name: Running vllm generative reward model tests on 8 NPUs
       run: |
         ROLLOUT_NAME=vllm pytest -s -x tests/experimental/reward_loop/test_reward_model_genrm.py
-      shell: python scripts/ci/coverage/collect.py run step-07 {0}
+      shell: python scripts/ci/coverage/collect.py run step-08 {0}
     - name: Running vllm discriminative reward model tests on 8 NPUs
       run: |
         ROLLOUT_NAME=vllm pytest -s -x tests/experimental/reward_loop/test_reward_model_disrm.py
-      shell: python scripts/ci/coverage/collect.py run step-08 {0}
+      shell: python scripts/ci/coverage/collect.py run step-09 {0}
     - name: Running vllm agent loop with reward manager tests on 8 NPUs
       run: |
         ROLLOUT_NAME=vllm pytest -s -x tests/experimental/reward_loop/test_agent_reward_loop_standalone.py
-      shell: python scripts/ci/coverage/collect.py run step-09 {0}
+      shell: python scripts/ci/coverage/collect.py run step-10 {0}
     - name: Running vllm agent loop with reward model colocate tests on 8 NPUs
       run: |
         export HCCL_HOST_SOCKET_PORT_RANGE=auto
         export HCCL_NPU_SOCKET_PORT_RANGE=auto
         ROLLOUT_NAME=vllm pytest -s -x tests/experimental/reward_loop/test_agent_reward_loop_colocate.py
-      shell: python scripts/ci/coverage/collect.py run step-10 {0}
+      shell: python scripts/ci/coverage/collect.py run step-11 {0}
     - name: Package raw coverage (including partial runs)
       if: ${{ always() }}
       shell: bash
@@ -1636,7 +1791,7 @@ jobs:
     runs-on: linux-aarch64-a3-800i-8
     timeout-minutes: 210
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend-ci/verl/verl:latest-sglang-a3-ubuntu
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/verl/verl:latest-sglang-a3-ubuntu
       options: --shm-size 16g
     env:
       HF_ENDPOINT: https://hf-mirror.com
@@ -1726,7 +1881,7 @@ jobs:
     runs-on: linux-aarch64-a3-800i-16
     timeout-minutes: 150
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
       options: --shm-size 120g
     env:
       HF_DATASETS_CACHE: /root/.cache/temp/hf-datasets
@@ -1739,10 +1894,10 @@ jobs:
       VERL_COVERAGE_WORKFLOW: vllm_ascend.yml
       VERL_COVERAGE_JOB: vllm_ascend
       VERL_COVERAGE_PLAN: '[{"id": "step-06", "name": "Prepare gsm8k dataset", "entrypoints": ["examples/data_preprocess/gsm8k.py"],
-        "requires_verl_coverage": false}, {"id": "step-07", "name": "Test the latest vLLM Rollout async with deterministic
-        agent loop", "entrypoints": [], "requires_verl_coverage": true}, {"id": "step-08", "name": "Test vllm server abort
+        "requires_verl_coverage": false}, {"id": "step-08", "name": "Test the latest vLLM Rollout async with deterministic
+        agent loop", "entrypoints": [], "requires_verl_coverage": true}, {"id": "step-09", "name": "Test vllm server abort
         functionality", "entrypoints": ["tests/workers/rollout/rollout_vllm/test_vllm_abort.py"], "requires_verl_coverage":
-        true}, {"id": "step-09", "name": "Test bucketed weight transfer", "entrypoints": ["tests/utils/test_bucketed_weight_transfer.py"],
+        true}, {"id": "step-10", "name": "Test bucketed weight transfer", "entrypoints": ["tests/utils/test_bucketed_weight_transfer.py"],
         "requires_verl_coverage": true}]'
     needs:
     - validate
@@ -1783,8 +1938,16 @@ jobs:
         ray stop --force
         python3 examples/data_preprocess/gsm8k.py --local_dataset_path /root/.cache/modelscope/dataset/openai/gsm8k --local_dir ${HOME}/data/gsm8k
       shell: python scripts/ci/coverage/collect.py run step-06 {0}
+    - name: Print system memory before tests
+      run: |
+        awk '/^(MemTotal|MemFree|MemAvailable|Cached|Buffers|AnonPages|Shmem|Slab):/ {
+            printf "%-16s %10.3f GiB\n", $1, $2/1048576
+        }' /proc/meminfo
     - name: Test the latest vLLM Rollout async with deterministic agent loop
       env:
+        VERL_TEST_N_GPUS_PER_NODE: '16'
+        VERL_TEST_NNODES: '1'
+        VERL_TEST_ROLLOUT_N: '16'
         PYTHONHASHSEED: '0'
         AGENT_LOOP_TOOL_AGENT_ROLLOUT_CONFIG: |
           temperature: 0.0
@@ -1798,15 +1961,15 @@ jobs:
         export HCCL_NPU_SOCKET_PORT_RANGE=auto
         export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=1
         ROLLOUT_NAME=vllm pytest -svvv tests/experimental/agent_loop
-      shell: python scripts/ci/coverage/collect.py run step-07 {0}
+      shell: python scripts/ci/coverage/collect.py run step-08 {0}
     - name: Test vllm server abort functionality
       run: |
         pytest tests/workers/rollout/rollout_vllm/test_vllm_abort.py -v -s
-      shell: python scripts/ci/coverage/collect.py run step-08 {0}
+      shell: python scripts/ci/coverage/collect.py run step-09 {0}
     - name: Test bucketed weight transfer
       run: |
         pytest -svvv tests/utils/test_bucketed_weight_transfer.py
-      shell: python scripts/ci/coverage/collect.py run step-09 {0}
+      shell: python scripts/ci/coverage/collect.py run step-10 {0}
     - name: Package raw coverage (including partial runs)
       if: ${{ always() }}
       shell: bash
