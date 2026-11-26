@@ -1,0 +1,18 @@
+name: Fork push pre-commit
+
+on:
+  push:
+    # The pre-commit workflow already handles pushes to these branches.
+    branches-ignore:
+      - main
+      - v0.*
+    tags:
+      - '**'
+
+permissions:
+  contents: read
+
+jobs:
+  pre-commit:
+    if: github.repository == 'lxb007981/verl'
+    uses: ./.github/workflows/pre-commit.yml

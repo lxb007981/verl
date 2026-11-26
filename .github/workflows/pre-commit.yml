@@ -3,6 +3,7 @@ name: pre-commit
 
 # No need to avoid / cancel lightweight pre-commit jobs
 on:
+  workflow_call:
   schedule:
     - cron: "0 0 * * 0"
   pull_request:
