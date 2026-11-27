@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
 import importlib.util
 import sys
 import types
@@ -335,6 +336,57 @@ def _install_fake_reload(monkeypatch, events):
     reload.start_reload = lambda model: events.append("start_reload")
     reload.finish_reload = lambda model, model_config, device: events.append("finish_reload")
     monkeypatch.setitem(sys.modules, reload.__name__, reload)
+
+
+@pytest.mark.parametrize("quantized", [False, True])
+def test_npu_unquantized_moe_refit_is_bracketed_by_moe_staging(monkeypatch, quantized):
+    """NPU has no vLLM reload lifecycle: an unquantized refit stages the expert weights in checkpoint layout
+    before the bucket stream and folds the kernel layout back around the post-load processing. A quantized
+    refit keeps its path."""
+    events = []
+    monkeypatch.setattr(_vllm_rollout_utils, "is_npu_available", True)
+    monkeypatch.setattr(_vllm_rollout_utils, "is_quantized_model", lambda config: quantized)
+
+    @contextlib.contextmanager
+    def fold(layers):
+        if not layers:
+            yield
+            return
+        events.append("fold_enter")
+        yield
+        events.append("fold_exit")
+
+    unquant = types.ModuleType("verl.utils.vllm.vllm_unquant_utils")
+    unquant.stage_unquantized_moe_params = lambda model: events.append("stage") or [model]
+    unquant.fold_unquantized_moe_params = fold
+    monkeypatch.setitem(sys.modules, unquant.__name__, unquant)
+    loader_utils = types.ModuleType("vllm.model_executor.model_loader.utils")
+    loader_utils.process_weights_after_loading = lambda *args: events.append("postprocess")
+    monkeypatch.setitem(sys.modules, loader_utils.__name__, loader_utils)
+
+    class Receiver:
+        def __init__(self, **kwargs):
+            pass
+
+        def receive_weights(self, on_bucket_received):
+            on_bucket_received([], False)
+            on_bucket_received([], True)
+
+    monkeypatch.setattr(_vllm_rollout_utils, "BucketedWeightReceiver", Receiver)
+    worker = object.__new__(vLLMColocateWorkerExtension)
+    worker.device = torch.device("cpu")
+    worker.model_runner = _FakeModelRunner(_ToyModel())
+    monkeypatch.setattr(worker, "_iter_all_models", lambda: [None])
+    monkeypatch.setattr(worker, "_iter_all_models_with_config", lambda: [(None, None)])
+    monkeypatch.setattr(worker, "_get_zmq_handle", lambda: "unused")
+    monkeypatch.setattr(worker, "_update_weights", lambda *args, **kwargs: events.append("bucket"))
+
+    worker.update_weights_from_ipc()
+
+    if quantized:
+        assert events == ["bucket", "bucket", "postprocess"]
+    else:
+        assert events == ["stage", "bucket", "bucket", "fold_enter", "postprocess", "fold_exit"]
 
 
 def test_engram_key_matching():

@@ -360,6 +360,7 @@ class vLLMColocateWorkerExtension:
             for model in self._iter_all_models():
                 restore_moe_expert_maps(model)
 
+        staged_moe_layers = []
         if peft_config and base_sync_done:
             # Remove the old LoRA before the new one arrives (applied after is_last below).
             self.remove_lora(VLLM_LORA_INT_ID)
@@ -370,6 +371,15 @@ class vLLMColocateWorkerExtension:
 
             for model in self._iter_all_models():
                 start_reload(model)
+        elif not is_quantized_model(self.model_runner.vllm_config):
+            # NPU cannot use the reload lifecycle above (vLLM 0.30, as shipped by the Ascend image, has no
+            # start_reload), and a kernel prep that reshapes the expert weights -- vllm-ascend transposes
+            # w13/w2 in process_weights_after_loading -- leaves nothing the checkpoint-layout loads fit:
+            # hand them a checkpoint-layout view over the live storage, folded back after the last bucket.
+            from verl.utils.vllm.vllm_unquant_utils import stage_unquantized_moe_params
+
+            for model in self._iter_all_models():
+                staged_moe_layers.extend(stage_unquantized_moe_params(model))
 
         # =========================== step 2: receive weights and update ===========================
         receiver = BucketedWeightReceiver(
@@ -439,8 +449,11 @@ class vLLMColocateWorkerExtension:
             # Some post-load transforms are non-idempotent; run once after all buckets.
             from vllm.model_executor.model_loader.utils import process_weights_after_loading
 
-            for model, model_config in self._iter_all_models_with_config():
-                process_weights_after_loading(model, model_config, self.device)
+            from verl.utils.vllm.vllm_unquant_utils import fold_unquantized_moe_params
+
+            with fold_unquantized_moe_params(staged_moe_layers):
+                for model, model_config in self._iter_all_models_with_config():
+                    process_weights_after_loading(model, model_config, self.device)
         else:
             # vLLM reruns post-load processing once, after the last bucket
             from vllm.model_executor.model_loader.reload import finish_reload
